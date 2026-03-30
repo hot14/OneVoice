@@ -1,0 +1,7 @@
+{
+  "name": "동시통역가",
+  "description": "A real-time simultaneous interpretation app that provides fast and accurate translation between languages using Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

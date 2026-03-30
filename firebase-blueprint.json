@@ -1,0 +1,49 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "level": { "type": "number" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Vocabulary": {
+      "title": "Vocabulary",
+      "description": "Vocabulary item",
+      "type": "object",
+      "properties": {
+        "thai": { "type": "string" },
+        "meaning": { "type": "string" }
+      },
+      "required": ["thai", "meaning"]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "Lesson history",
+      "type": "object",
+      "properties": {
+        "topic": { "type": "string" }
+      },
+      "required": ["topic"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profile"
+    },
+    "/users/{userId}/vocabulary/{vocabId}": {
+      "schema": { "$ref": "Vocabulary" },
+      "description": "Vocabulary items"
+    },
+    "/users/{userId}/lessons/{lessonId}": {
+      "schema": { "$ref": "Lesson" },
+      "description": "Lesson history"
+    }
+  }
+}
