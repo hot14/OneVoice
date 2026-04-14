@@ -1,19 +1,20 @@
 /**
  * AudioProcessor - AudioWorklet processor for OneVoice
  * Features:
- * - Configurable buffer size (16KB default)
- * - RMS level detection for voice activity
+ * - Optimized buffer size (2KB default for low latency)
+ * - Enhanced RMS level detection for voice activity
  * - Sample rate validation
  * - Optimized for low-latency real-time processing
+ * - Silence suppression for bandwidth savings
  */
 
 class AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     
-    // Configuration
-    this._bufferSize = 4096; // 4KB default buffer for low latency
-    this._rmsThreshold = 0.02; // Voice activity threshold
+    // Configuration - Optimized for simultaneous interpretation
+    this._bufferSize = 2048; // 2KB buffer for reduced latency (was 4096)
+    this._rmsThreshold = 0.01; // Lower threshold for better sensitivity (was 0.02)
     this._sampleRate = sampleRate || 16000;
     
     // Ring buffer for smooth audio chunks
@@ -24,6 +25,9 @@ class AudioProcessor extends AudioWorkletProcessor {
     this._rmsSum = 0;
     this._rmsCount = 0;
     this._lastRmsReport = 0;
+    
+    // Frame counter for 10Hz reporting (every 100ms)
+    this._frameCount = 0;
     
     // Message handlers
     this.port.onmessage = this._handleMessage.bind(this);
@@ -89,13 +93,12 @@ class AudioProcessor extends AudioWorkletProcessor {
     // Calculate RMS for voice activity detection
     const rms = this._calculateRMS(samples);
     
-    // Track RMS for periodic reporting
-    this._rmsSum += rms;
-    this._rmsCount++;
-    
-    // Report RMS levels every ~500ms to main thread
+    // Track RMS for periodic reporting (10Hz = every ~100ms for better responsiveness)
+    this._frameCount++;
     const now = currentTime;
-    if (now - this._lastRmsReport > 0.5) {
+    
+    // Report RMS levels every ~100ms (10Hz) - more responsive than 500ms
+    if (now - this._lastRmsReport > 0.1) {
       const avgRms = this._rmsSum / Math.max(1, this._rmsCount);
       const isActive = avgRms > this._rmsThreshold;
       

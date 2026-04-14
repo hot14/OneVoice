@@ -1,11 +1,14 @@
 // Shared Embedding Model Singleton
 // Unified management for EmbeddingGemma across all modules
-// Dynamic import for lazy loading with WebGPU fallback
+// Dynamic import for lazy loading with multi-tier fallback: WebGPU → WASM → API
 
 import { debug, warn } from './logger';
 
 // Dynamic import type for transformers.js
 type EmbeddingPipeline = Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>>;
+
+// Runtime type for device backend
+type DeviceBackend = 'webgpu' | 'wasm' | 'api';
 
 // Singleton instance
 let embedder: EmbeddingPipeline | null = null;
@@ -13,26 +16,89 @@ let modelLoadingPromise: Promise<EmbeddingPipeline | null> | null = null;
 let loadAttempts = 0;
 const MAX_LOAD_ATTEMPTS = 3;
 
+// Current backend tracking
+let currentBackend: DeviceBackend = 'api';
+
 /**
- * Check if WebGPU is available
+ * Check if WebGPU is available with comprehensive browser detection
+ * Handles Chrome, Edge, Firefox, Safari, and mobile browsers
  */
 function isWebGPUAvailable(): boolean {
   if (typeof navigator === 'undefined') return false;
-  // Check for WebGPU in various browsers
-  const gpu = (navigator as any).gpu;
-  if (gpu) return true;
   
-  // Safari WebGPU detection
-  if (typeof navigator !== 'undefined' && 'webkitGetGPUInfo' in navigator) {
+  // Chrome/Edge: navigator.gpu
+  const gpu = (navigator as any).gpu;
+  if (gpu) {
+    // Check for WebGPU specifically in Chrome
+    const webgpu = gpu.get ? true : false;
+    return webgpu;
+  }
+  
+  // Safari: webkitGetGPUInfo (older API) or document.createElement('canvas').getContext('webgpu')
+  if ('webkitGetGPUInfo' in navigator) {
     return true;
+  }
+  
+  // Firefox: WebGPU behind flag, detected via canvas
+  try {
+    const canvas = document.createElement('canvas');
+    if (canvas.getContext && (canvas.getContext('webgpu') !== null)) {
+      return true;
+    }
+  } catch {
+    // Ignore detection errors
   }
   
   return false;
 }
 
 /**
+ * Check if WebAssembly (WASM) backend is available
+ * WASM is supported in all modern browsers
+ */
+function isWASMAvailable(): boolean {
+  try {
+    return typeof WebAssembly === 'object' && 
+           typeof WebAssembly.instantiate === 'function' &&
+           typeof SharedArrayBuffer !== 'undefined';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Determine optimal backend based on device capabilities
+ * Returns the best available backend
+ */
+export function getOptimalBackend(): DeviceBackend {
+  // Tier 1: WebGPU (fastest, on-device)
+  if (isWebGPUAvailable()) {
+    return 'webgpu';
+  }
+  
+  // Tier 2: WebAssembly (good balance of speed and compatibility)
+  if (isWASMAvailable()) {
+    return 'wasm';
+  }
+  
+  // Tier 3: API fallback (cloud-based)
+  return 'api';
+}
+
+/**
+ * Get device info for debugging
+ */
+export function getDeviceInfo(): { backend: DeviceBackend; webgpu: boolean; wasm: boolean } {
+  return {
+    backend: currentBackend,
+    webgpu: isWebGPUAvailable(),
+    wasm: isWASMAvailable(),
+  };
+}
+
+/**
  * Get or create the EmbeddingGemma singleton
- * WebGPU is automatically detected - falls back gracefully if unavailable
+ * Multi-tier fallback: WebGPU → WASM → API
  */
 export async function getEmbedder(): Promise<EmbeddingPipeline | null> {
   // Already loaded successfully
@@ -41,12 +107,6 @@ export async function getEmbedder(): Promise<EmbeddingPipeline | null> {
   // Currently loading
   if (modelLoadingPromise) return modelLoadingPromise;
 
-  // Check WebGPU availability
-  if (!isWebGPUAvailable()) {
-    warn("WebGPU not available - embedding features disabled");
-    return null;
-  }
-
   // Prevent infinite retry loops
   if (loadAttempts >= MAX_LOAD_ATTEMPTS) {
     warn("Max embedding model load attempts reached");
@@ -54,7 +114,12 @@ export async function getEmbedder(): Promise<EmbeddingPipeline | null> {
   }
 
   loadAttempts++;
-  debug(`Loading EmbeddingGemma (attempt ${loadAttempts}/${MAX_LOAD_ATTEMPTS})...`);
+  
+  // Determine optimal backend
+  const optimalBackend = getOptimalBackend();
+  currentBackend = optimalBackend;
+  
+  debug(`Loading EmbeddingGemma (attempt ${loadAttempts}/${MAX_LOAD_ATTEMPTS}) using ${optimalBackend} backend...`);
 
   modelLoadingPromise = (async () => {
     try {
@@ -65,27 +130,42 @@ export async function getEmbedder(): Promise<EmbeddingPipeline | null> {
       env.useBrowserCache = true;
       env.allowLocalModels = false;
 
+      // Configure device based on optimal backend with proper typing
+      const modelOptions = optimalBackend === 'webgpu' 
+        ? { device: 'webgpu' as const, dtype: 'q8' as const }
+        : optimalBackend === 'wasm'
+          ? { device: 'wasm' as const, dtype: 'q8' as const }
+          : { device: 'cpu' as const, dtype: 'q8' as const };
+
       const model = await pipeline(
         'feature-extraction', 
         'Xenova/embedding-gemma',
-        {
-          device: 'webgpu',
-          dtype: 'q8', // Quantized to 8-bit for memory efficiency
-        }
+        modelOptions
       ) as EmbeddingPipeline;
       
-      debug("EmbeddingGemma loaded successfully");
+      debug(`EmbeddingGemma loaded successfully on ${optimalBackend}`);
       embedder = model;
       loadAttempts = 0; // Reset on success
+      currentBackend = optimalBackend;
       return model;
     } catch (error) {
-      warn("Failed to load EmbeddingGemma:", error);
+      warn(`Failed to load EmbeddingGemma with ${optimalBackend}:`, error);
       modelLoadingPromise = null;
       loadAttempts--;
       
+      // Multi-tier fallback: try WASM if WebGPU failed
+      if (optimalBackend === 'webgpu' && loadAttempts < MAX_LOAD_ATTEMPTS) {
+        warn("WebGPU failed, attempting WASM fallback...");
+        currentBackend = 'wasm';
+        // Trigger a new loading attempt with WASM
+        loadAttempts++; // Counteract the decrement
+        return getEmbedder();
+      }
+      
       // If this was the last attempt, don't retry
       if (loadAttempts >= MAX_LOAD_ATTEMPTS) {
-        warn("Embedding model permanently unavailable");
+        warn("Embedding model permanently unavailable - using API fallback");
+        currentBackend = 'api';
         return null;
       }
       

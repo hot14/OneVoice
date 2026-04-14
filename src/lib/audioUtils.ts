@@ -4,8 +4,32 @@ export class AudioRecorder {
   private workletNode: AudioWorkletNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private isStopped = false;
+  
+  // Target sample rate for Gemini Live API compatibility
+  private readonly TARGET_SAMPLE_RATE = 16000;
 
   constructor(private onAudioData: (base64Data: string) => void) {}
+
+  /**
+   * Detect optimal sample rate for the current device
+   * Falls back gracefully if preferred rate is not supported
+   */
+  private getSupportedSampleRate(): number {
+    try {
+      const testContext = new AudioContext();
+      const supportedRates = testContext.sampleRate;
+      testContext.close();
+      
+      // Prefer 16kHz for Gemini Live API (lowest cost, adequate quality for voice)
+      if (supportedRates >= 16000) {
+        return 16000;
+      }
+      // Fallback to device's native rate if < 16kHz (unlikely but defensive)
+      return supportedRates;
+    } catch {
+      return 16000; // Safe default
+    }
+  }
 
   async start() {
     if (this.isStopped) {
@@ -17,10 +41,14 @@ export class AudioRecorder {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
+          // Request native sample rate for efficiency
+          sampleRate: this.TARGET_SAMPLE_RATE,
         },
       });
 
-      const audioContext = new AudioContext({ sampleRate: 16000 });
+      // Use supported sample rate (may differ from requested)
+      const supportedRate = this.getSupportedSampleRate();
+      const audioContext = new AudioContext({ sampleRate: supportedRate });
 
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
