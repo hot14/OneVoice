@@ -2,7 +2,6 @@
 // EmbeddingGemma를 활용하여 시맨틱 유사도 기반 캐시 히트
 // Cosine similarity threshold: 0.92 (0.85-0.95 recommended)
 
-import { pipeline, FeatureExtractionPipeline } from '@huggingface/transformers';
 import { getCachedResponse, setCachedResponse, normalizePrompt } from './promptNormalizer';
 import { debug, warn } from './logger';
 
@@ -21,15 +20,18 @@ interface SemanticCacheItem {
 // 시맨틱 캐시 저장소
 const semanticCache: SemanticCacheItem[] = [];
 
+// Dynamic import type for transformers.js
+type EmbeddingPipeline = Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>>;
+
 // EmbeddingGemma 모델 인스턴스 (Singleton)
-let embedder: FeatureExtractionPipeline | null = null;
-let modelLoadingPromise: Promise<FeatureExtractionPipeline> | null = null;
+let embedder: EmbeddingPipeline | null = null;
+let modelLoadingPromise: Promise<EmbeddingPipeline> | null = null;
 
 /**
- * EmbeddingGemma 모델을 얻음 (Singleton 패턴)
- * WebGPU 가용성 자동 체크
+ * Embed딩Gemma 모델을 얻음 (Singleton 패턴)
+ * WebGPU 가용성 자동 체크 - 동적 임포트로 지연 로드
  */
-async function getEmbedder(): Promise<FeatureExtractionPipeline | null> {
+async function getEmbedder(): Promise<EmbeddingPipeline | null> {
   // 이미 로드됨
   if (embedder) return embedder;
 
@@ -45,10 +47,14 @@ async function getEmbedder(): Promise<FeatureExtractionPipeline | null> {
   modelLoadingPromise = (async () => {
     try {
       debug("Loading EmbeddingGemma for semantic cache...");
+      // Dynamic import - only load when needed
+      const { pipeline, env } = await import('@huggingface/transformers');
+      env.useBrowserCache = true;
+
       const model = await pipeline('feature-extraction', 'Xenova/embedding-gemma', {
         device: 'webgpu',
         dtype: 'q8',
-      });
+      }) as EmbeddingPipeline;
       debug("EmbeddingGemma loaded for semantic cache");
       return model;
     } catch (error) {
@@ -88,7 +94,7 @@ async function getPromptEmbedding(prompt: string): Promise<number[] | null> {
 
   try {
     const normalizedPrompt = normalizePrompt(prompt);
-    const result = await model(normalizedPrompt, { pooling: 'mean', normalize: true });
+    const result = await (model as any)(normalizedPrompt, { pooling: 'mean', normalize: true });
     return Array.from(result.data as unknown as number[]);
   } catch (error) {
     warn("Failed to generate embedding for semantic cache:", error);

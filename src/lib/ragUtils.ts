@@ -1,12 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { db, auth } from "../firebase";
 import { doc, setDoc, getDoc, collection, writeBatch, getDocs, serverTimestamp, query, orderBy } from "firebase/firestore";
-import { pipeline, env, FeatureExtractionPipeline } from '@huggingface/transformers';
 import { debug, warn, error as loggerError } from './logger';
-
-// Enable webGPU for mobile performance (WASM fallback is automatic)
-env.useBrowserCache = true;
-env.allowLocalModels = false;
 
 export interface ApiSettings {
   provider: string; // 'gemini' | 'custom' | 'openai' | 'embedgemma'
@@ -15,12 +10,15 @@ export interface ApiSettings {
   model?: string;
 }
 
+// Dynamic import type for transformers.js
+type EmbeddingPipeline = Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>>;
+
 // EmbeddingGemma model - optimized for on-device (200MB RAM with quantization)
 // Falls back to API if WebGPU is unavailable
-let embeddingModel: FeatureExtractionPipeline | null = null;
-let modelLoadingPromise: Promise<FeatureExtractionPipeline> | null = null;
+let embeddingModel: EmbeddingPipeline | null = null;
+let modelLoadingPromise: Promise<EmbeddingPipeline> | null = null;
 
-async function getEmbeddingModel(): Promise<FeatureExtractionPipeline | null> {
+async function getEmbeddingModel(): Promise<EmbeddingPipeline | null> {
   // Already loaded
   if (embeddingModel) return embeddingModel;
 
@@ -37,12 +35,17 @@ async function getEmbeddingModel(): Promise<FeatureExtractionPipeline | null> {
   modelLoadingPromise = (async () => {
     try {
       debug("Loading EmbeddingGemma model for on-device embeddings...");
+      // Dynamic import - only load when needed
+      const { pipeline, env } = await import('@huggingface/transformers');
+      env.useBrowserCache = true;
+      env.allowLocalModels = false;
+
       // Using EmbeddingGemma - 308M params, optimized for mobile (200MB RAM)
       // Supports 100+ languages including Korean, Japanese, Chinese
       const model = await pipeline('feature-extraction', 'Xenova/embedding-gemma', {
         device: 'webgpu',
         dtype: 'q8', // Quantized to 8-bit for memory efficiency
-      });
+      }) as EmbeddingPipeline;
       debug("EmbeddingGemma model loaded successfully");
       return model;
     } catch (error) {
@@ -85,7 +88,8 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
     if (model) {
       const embeddings: number[][] = [];
       for (const text of texts) {
-        const result = await model(text, { pooling: 'mean', normalize: true });
+        // Cast to any since we know this is a feature-extraction pipeline
+        const result = await (model as any)(text, { pooling: 'mean', normalize: true });
         // Result is a 2D array, extract the embedding vector
         const embedding = Array.from(result.data as unknown as number[]);
         embeddings.push(embedding);
@@ -367,7 +371,7 @@ export async function retrieveRelevantChunks(queryText: string, materialIds: str
     if (provider === 'embedgemma' || provider === 'auto') {
       const model = await getEmbeddingModel();
       if (model) {
-        const result = await model(queryText, { pooling: 'mean', normalize: true });
+        const result = await (model as any)(queryText, { pooling: 'mean', normalize: true });
         queryEmbedding = Array.from(result.data as unknown as number[]);
       }
     }

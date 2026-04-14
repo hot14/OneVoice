@@ -42,9 +42,10 @@ export default defineConfig(({ mode }) => {
       // Optimize chunk splitting
       chunkSizeWarningLimit: 500, // 500KB warning threshold
     },
-    // Optimize dependencies
+    // Optimize dependencies - pre-bundle firebase, exclude transformers.js for lazy loading
     optimizeDeps: {
-      exclude: ['@huggingface/transformers'], // Exclude from pre-bundling
+      exclude: ['@huggingface/transformers'],
+      include: ['react', 'react-dom', 'firebase/app', 'firebase/auth', 'firebase/firestore'],
     },
   };
 });
