@@ -261,7 +261,8 @@ export function MaterialManager({
         } else {
           // Need to process
           const content = await getFileContent(fileId, token);
-          const apiKey = import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+          // Security: Use localStorage for API key, fallback to env var
+          const apiKey = localStorage.getItem('api_key_chat') || import.meta.env.VITE_GEMINI_API_KEY || "";
           if (!apiKey) throw new Error("API Key not found");
           
           materialData = await processAndStoreMaterial(fileId, fileName, content, apiKey, chatApiSettings, embeddingApiSettings);

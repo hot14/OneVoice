@@ -3,12 +3,16 @@ export class AudioRecorder {
   private audioContext: AudioContext | null = null;
   private workletNode: AudioWorkletNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private isStopped = false;
 
   constructor(private onAudioData: (base64Data: string) => void) {}
 
   async start() {
+    if (this.isStopped) {
+      throw new Error('AudioRecorder has been stopped. Create a new instance.');
+    }
+
     try {
-      console.log("Requesting microphone access...");
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -16,30 +20,29 @@ export class AudioRecorder {
         },
       });
 
-      console.log("Microphone access granted.");
-      const tracks = this.stream.getTracks();
-      console.log("Stream tracks:", tracks);
-
       const audioContext = new AudioContext({ sampleRate: 16000 });
-      
+
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
       }
-      
+
       await audioContext.audioWorklet.addModule('/src/lib/audioProcessor.js');
 
       this.audioContext = audioContext;
-      
-      console.log("Audio stream tracks:", this.stream?.getTracks());
 
       if (!this.stream || this.stream.getAudioTracks().length === 0) {
-        throw new Error(`Audio stream is not available or has no audio tracks. Tracks found: ${this.stream?.getTracks().length}`);
+        throw new Error('Audio stream is not available or has no audio tracks.');
       }
 
-      this.source = this.audioContext.createMediaStreamSource(this.stream);
-      this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-processor');
+      this.source = audioContext.createMediaStreamSource(this.stream);
+      this.workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+
+      // Clear previous port message handler
+      this.workletNode.port.onmessage = null;
 
       this.workletNode.port.onmessage = (e) => {
+        if (this.isStopped) return;
+
         const inputData = e.data;
         const pcm16 = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
@@ -52,94 +55,143 @@ export class AudioRecorder {
         for (let i = 0; i < pcm16.length; i++) {
           view.setInt16(i * 2, pcm16[i], true);
         }
-        
+
         let binary = '';
         const bytes = new Uint8Array(buffer);
-        const len = bytes.byteLength;
-        for (let i = 0; i < len; i++) {
+        for (let i = 0; i < bytes.length; i++) {
           binary += String.fromCharCode(bytes[i]);
         }
         const base64 = btoa(binary);
-        
+
         this.onAudioData(base64);
       };
 
       this.source.connect(this.workletNode);
     } catch (err) {
-      console.error('Error starting audio recorder:', err);
+      // Cleanup on error
+      this.cleanup();
       throw err;
     }
   }
 
-  stop() {
+  /**
+   * Properly cleanup all audio resources
+   */
+  private cleanup() {
+    this.isStopped = true;
+
     if (this.workletNode) {
-      this.workletNode.disconnect();
+      try {
+        this.workletNode.port.onmessage = null;
+        this.workletNode.disconnect();
+      } catch {
+        // Ignore cleanup errors
+      }
       this.workletNode = null;
     }
+
     if (this.source) {
-      this.source.disconnect();
+      try {
+        this.source.disconnect();
+      } catch {
+        // Ignore cleanup errors
+      }
       this.source = null;
     }
+
     if (this.stream) {
-      this.stream.getTracks().forEach((track) => track.stop());
+      this.stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Ignore cleanup errors
+        }
+      });
       this.stream = null;
     }
+
     if (this.audioContext) {
-      this.audioContext.close();
+      try {
+        this.audioContext.close();
+      } catch {
+        // Ignore cleanup errors
+      }
       this.audioContext = null;
     }
+  }
+
+  stop() {
+    this.cleanup();
   }
 }
 
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
   private nextPlayTime = 0;
+  private isStopped = false;
+
+  // Use 16kHz to match recorder - avoids expensive resampling
+  private readonly SAMPLE_RATE = 16000;
 
   constructor() {
-    this.audioContext = new AudioContext({ sampleRate: 24000 });
+    this.audioContext = new AudioContext({ sampleRate: this.SAMPLE_RATE });
   }
 
   async playBase64Pcm(base64Data: string) {
-    if (!this.audioContext) return;
+    if (!this.audioContext || this.isStopped) return;
 
-    const binaryString = atob(base64Data);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    try {
+      const binaryString = atob(base64Data);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const pcm16 = new Int16Array(bytes.buffer);
+      const audioBuffer = this.audioContext.createBuffer(1, pcm16.length, this.SAMPLE_RATE);
+      const channelData = audioBuffer.getChannelData(0);
+
+      for (let i = 0; i < pcm16.length; i++) {
+        channelData[i] = pcm16[i] / 32768.0;
+      }
+
+      const source = this.audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.audioContext.destination);
+
+      const currentTime = this.audioContext.currentTime;
+      if (this.nextPlayTime < currentTime) {
+        this.nextPlayTime = currentTime;
+      }
+
+      source.start(this.nextPlayTime);
+      this.nextPlayTime += audioBuffer.duration;
+    } catch {
+      // Ignore playback errors
     }
-
-    const pcm16 = new Int16Array(bytes.buffer);
-    const audioBuffer = this.audioContext.createBuffer(1, pcm16.length, 24000);
-    const channelData = audioBuffer.getChannelData(0);
-
-    for (let i = 0; i < pcm16.length; i++) {
-      channelData[i] = pcm16[i] / 32768.0;
-    }
-
-    const source = this.audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
-
-    const currentTime = this.audioContext.currentTime;
-    if (this.nextPlayTime < currentTime) {
-      this.nextPlayTime = currentTime;
-    }
-    
-    source.start(this.nextPlayTime);
-    this.nextPlayTime += audioBuffer.duration;
   }
 
+  /**
+   * Properly cleanup audio resources
+   */
   stop() {
+    this.isStopped = true;
+
     if (this.audioContext) {
-      this.audioContext.close();
+      try {
+        this.audioContext.close();
+      } catch {
+        // Ignore cleanup errors
+      }
       this.audioContext = null;
     }
   }
 
   flush() {
     this.stop();
-    this.audioContext = new AudioContext({ sampleRate: 24000 });
+    this.isStopped = false;
+    this.audioContext = new AudioContext({ sampleRate: this.SAMPLE_RATE });
     this.nextPlayTime = 0;
   }
 }

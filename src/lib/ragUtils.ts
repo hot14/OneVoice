@@ -1,12 +1,58 @@
 import { GoogleGenAI } from "@google/genai";
 import { db, auth } from "../firebase";
 import { doc, setDoc, getDoc, collection, writeBatch, getDocs, serverTimestamp, query, orderBy } from "firebase/firestore";
+import { pipeline, env, FeatureExtractionPipeline } from '@huggingface/transformers';
+import { debug, warn, error as loggerError } from './logger';
+
+// Enable webGPU for mobile performance (WASM fallback is automatic)
+env.useBrowserCache = true;
+env.allowLocalModels = false;
 
 export interface ApiSettings {
-  provider: string; // 'gemini' | 'custom'
+  provider: string; // 'gemini' | 'custom' | 'openai' | 'embedgemma'
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+}
+
+// EmbeddingGemma model - optimized for on-device (200MB RAM with quantization)
+// Falls back to API if WebGPU is unavailable
+let embeddingModel: FeatureExtractionPipeline | null = null;
+let modelLoadingPromise: Promise<FeatureExtractionPipeline> | null = null;
+
+async function getEmbeddingModel(): Promise<FeatureExtractionPipeline | null> {
+  // Already loaded
+  if (embeddingModel) return embeddingModel;
+
+  // Currently loading
+  if (modelLoadingPromise) return modelLoadingPromise;
+
+  // Check if WebGPU is available (required for mobile performance)
+  // Note: WebGPU API is available in Chrome/Edge, Safari 16.4+, Firefox nightly
+  if (typeof navigator !== 'undefined' && !(navigator as any).gpu) {
+    debug("WebGPU not available - using API fallback for embeddings");
+    return null;
+  }
+
+  modelLoadingPromise = (async () => {
+    try {
+      debug("Loading EmbeddingGemma model for on-device embeddings...");
+      // Using EmbeddingGemma - 308M params, optimized for mobile (200MB RAM)
+      // Supports 100+ languages including Korean, Japanese, Chinese
+      const model = await pipeline('feature-extraction', 'Xenova/embedding-gemma', {
+        device: 'webgpu',
+        dtype: 'q8', // Quantized to 8-bit for memory efficiency
+      });
+      debug("EmbeddingGemma model loaded successfully");
+      return model;
+    } catch (error) {
+      warn("Failed to load EmbeddingGemma, falling back to API:", error);
+      modelLoadingPromise = null;
+      return null;
+    }
+  })();
+
+  return modelLoadingPromise;
 }
 
 export function chunkText(text: string, chunkSize = 3000, overlap = 500): string[] {
@@ -22,16 +68,39 @@ export function chunkText(text: string, chunkSize = 3000, overlap = 500): string
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function generateEmbeddings(texts: string[], apiKey: string, embeddingApiSettings?: ApiSettings): Promise<number[][]> {
-  const isCustom = embeddingApiSettings?.provider === 'custom';
+  // Determine provider priority:
+  // 1. 'embedgemma' - on-device EmbeddingGemma (free, mobile-optimized)
+  // 2. 'openai' or 'custom' - API based
+  // 3. 'gemini' - Gemini API
+  // 4. Auto-detect - try EmbeddingGemma first, fallback to OpenAI API
+
+  const provider = embeddingApiSettings?.provider || 'auto';
   const customKey = embeddingApiSettings?.apiKey || apiKey;
   const baseUrl = embeddingApiSettings?.baseUrl || 'https://api.openai.com/v1';
-  const embeddingModel = embeddingApiSettings?.model || 'text-embedding-3-small';
+  const embeddingModelName = embeddingApiSettings?.model || 'text-embedding-3-small';
 
+  // Try on-device EmbeddingGemma first (free, mobile-optimized)
+  if (provider === 'embedgemma' || provider === 'auto') {
+    const model = await getEmbeddingModel();
+    if (model) {
+      const embeddings: number[][] = [];
+      for (const text of texts) {
+        const result = await model(text, { pooling: 'mean', normalize: true });
+        // Result is a 2D array, extract the embedding vector
+        const embedding = Array.from(result.data as unknown as number[]);
+        embeddings.push(embedding);
+      }
+      return embeddings;
+    }
+  }
+
+  // Fallback to API-based embedding
+  const isCustom = provider === 'openai' || provider === 'custom';
   const ai = new GoogleGenAI({ apiKey });
   const embeddings: number[][] = [];
-  
+
   // Process in smaller batches to avoid rate limits
-  const concurrency = isCustom ? 5 : 3; // Custom APIs might handle higher concurrency
+  const concurrency = isCustom ? 5 : 3;
   for (let i = 0; i < texts.length; i += concurrency) {
     const batch = texts.slice(i, i + concurrency);
     const promises = batch.map(async (text) => {
@@ -41,7 +110,7 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
         try {
           if (isCustom) {
             const endpoint = baseUrl.endsWith('/embeddings')
-              ? baseUrl 
+              ? baseUrl
               : `${baseUrl.replace(/\/$/, '')}/embeddings`;
 
             const res = await fetch(endpoint, {
@@ -51,7 +120,7 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
                 'Authorization': `Bearer ${customKey}`
               },
               body: JSON.stringify({
-                model: embeddingModel,
+                model: embeddingModelName,
                 input: text
               })
             });
@@ -72,9 +141,9 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
           if (error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('Quota') || error?.message?.includes('RESOURCE_EXHAUSTED') || error?.message?.includes('Too Many Requests')) {
             retries--;
             if (retries === 0) throw error;
-            console.warn(`Rate limit hit, retrying in ${delay}ms...`);
+            warn(`Rate limit hit, retrying in ${delay}ms...`);
             await sleep(delay);
-            delay *= 2; // Exponential backoff
+            delay *= 2;
           } else {
             throw error;
           }
@@ -82,13 +151,12 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
       }
       return [];
     });
-    
+
     const batchEmbeddings = await Promise.all(promises);
     embeddings.push(...batchEmbeddings);
-    
-    // Add a delay between batches to respect rate limits
+
     if (i + concurrency < texts.length) {
-      await sleep(isCustom ? 500 : 1500); 
+      await sleep(isCustom ? 500 : 1500);
     }
   }
   return embeddings;
@@ -108,9 +176,10 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 export async function generateChatResponse(prompt: string, apiKey: string, chatApiSettings?: ApiSettings, systemInstruction?: string, responseFormat?: "json" | "text", history?: { role: "user" | "model" | "tutor"; text: string }[]): Promise<string> {
-  const isCustom = chatApiSettings?.provider === 'custom';
+  const isCustom = chatApiSettings?.provider === 'custom' || chatApiSettings?.provider === 'openai';
   const customKey = chatApiSettings?.apiKey || apiKey;
   const baseUrl = chatApiSettings?.baseUrl || 'https://api.openai.com/v1';
+  // Default to gpt-4o-mini for cost efficiency ($0.15/1M input vs $2.50 for gpt-4o)
   const chatModel = chatApiSettings?.model || 'gpt-4o-mini';
 
   if (isCustom) {
@@ -189,6 +258,36 @@ export async function generateChatResponse(prompt: string, apiKey: string, chatA
   }
 }
 
+/**
+ * 시맨틱 캐시를 활용한 Chat API 호출 래퍼
+ * 중복/유사 프롬프트에 대해 API 호출 없이 캐시 응답 반환
+ * @param prompt 프롬프트
+ * @param apiKey API 키
+ * @param chatApiSettings API 설정
+ * @param systemInstruction 시스템 명령어
+ * @param responseFormat 응답 형식
+ * @param history 대화 히스토리
+ * @returns API 응답 문자열
+ */
+export async function generateChatResponseCached(
+  prompt: string,
+  apiKey: string,
+  chatApiSettings?: ApiSettings,
+  systemInstruction?: string,
+  responseFormat?: "json" | "text",
+  history?: { role: "user" | "model" | "tutor"; text: string }[]
+): Promise<{ response: string; cached: boolean }> {
+  // Import here to avoid circular dependency
+  const { getSemanticCachedResponse } = await import('./semanticCache');
+
+  const { response, cached } = await getSemanticCachedResponse(
+    prompt,
+    () => generateChatResponse(prompt, apiKey, chatApiSettings, systemInstruction, responseFormat, history)
+  );
+
+  return { response, cached };
+}
+
 export async function processAndStoreMaterial(fileId: string, fileName: string, content: string, apiKey: string, chatApiSettings?: ApiSettings, embeddingApiSettings?: ApiSettings) {
   if (!auth.currentUser) throw new Error("Not authenticated");
   const uid = auth.currentUser.uid;
@@ -205,9 +304,10 @@ export async function processAndStoreMaterial(fileId: string, fileName: string, 
   const summaryPrompt = `Summarize the following document in 2-3 sentences. Focus on the main topics and key takeaways. Document:\n\n${content.substring(0, 10000)}`;
 
   try {
-    summary = await generateChatResponse(summaryPrompt, apiKey, chatApiSettings);
+    const { response } = await generateChatResponseCached(summaryPrompt, apiKey, chatApiSettings);
+    summary = response;
   } catch (error) {
-    console.error("Failed to generate summary:", error);
+    loggerError("Failed to generate summary:", error);
   }
 
   // 3. Chunk and Embed
@@ -254,8 +354,8 @@ export async function retrieveRelevantChunks(queryText: string, materialIds: str
   if (!auth.currentUser || materialIds.length === 0) return [];
   const uid = auth.currentUser.uid;
 
-  // 1. Embed query
-  const isCustom = embeddingApiSettings?.provider === 'custom';
+  // Embed query - try on-device EmbeddingGemma first (free, mobile-optimized)
+  const provider = embeddingApiSettings?.provider || 'auto';
   const customKey = embeddingApiSettings?.apiKey || apiKey;
   const baseUrl = embeddingApiSettings?.baseUrl || 'https://api.openai.com/v1';
   const embeddingModel = embeddingApiSettings?.model || 'text-embedding-3-small';
@@ -263,36 +363,49 @@ export async function retrieveRelevantChunks(queryText: string, materialIds: str
   let queryEmbedding: number[] | undefined;
 
   try {
-    if (isCustom) {
-      const endpoint = baseUrl.endsWith('/embeddings')
-        ? baseUrl 
-        : `${baseUrl.replace(/\/$/, '')}/embeddings`;
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${customKey}`
-        },
-        body: JSON.stringify({
-          model: embeddingModel,
-          input: queryText
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        queryEmbedding = data.data?.[0]?.embedding;
+    // Try EmbeddingGemma first (free, on-device)
+    if (provider === 'embedgemma' || provider === 'auto') {
+      const model = await getEmbeddingModel();
+      if (model) {
+        const result = await model(queryText, { pooling: 'mean', normalize: true });
+        queryEmbedding = Array.from(result.data as unknown as number[]);
       }
-    } else {
-      const ai = new GoogleGenAI({ apiKey });
-      const queryResult = await ai.models.embedContent({
-        model: 'gemini-embedding-2-preview',
-        contents: queryText,
-      });
-      queryEmbedding = queryResult.embeddings?.[0]?.values;
+    }
+
+    // Fallback to API-based
+    if (!queryEmbedding) {
+      const isCustom = provider === 'openai' || provider === 'custom';
+      if (isCustom) {
+        const endpoint = baseUrl.endsWith('/embeddings')
+          ? baseUrl
+          : `${baseUrl.replace(/\/$/, '')}/embeddings`;
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${customKey}`
+          },
+          body: JSON.stringify({
+            model: embeddingModel,
+            input: queryText
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          queryEmbedding = data.data?.[0]?.embedding;
+        }
+      } else {
+        const ai = new GoogleGenAI({ apiKey });
+        const queryResult = await ai.models.embedContent({
+          model: 'gemini-embedding-2-preview',
+          contents: queryText,
+        });
+        queryEmbedding = queryResult.embeddings?.[0]?.values;
+      }
     }
   } catch (error) {
-    console.error("Failed to embed query:", error);
+    loggerError("Failed to embed query:", error);
     return [];
   }
 

@@ -50,10 +50,10 @@ export default function App() {
               onShowLearning={() => setShowLearning(true)}
             />
             {showInterpreter && (
-              <InterpreterSession 
+              <InterpreterSession
                 onClose={() => {
                   setShowInterpreter(false);
-                }} 
+                }}
               />
             )}
           </>

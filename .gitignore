@@ -4,5 +4,33 @@ dist/
 coverage/
 .DS_Store
 *.log
+
+# Environment variables (contains API keys and secrets)
 .env*
 !.env.example
+
+# Firebase configuration (contains API keys - DO NOT COMMIT)
+firebase-applet-config.json
+firebase-config.json
+*.firebase.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+
+# Temporary files
+tmp/
+temp/

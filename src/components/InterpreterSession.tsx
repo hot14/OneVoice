@@ -7,6 +7,17 @@ import { useLanguage, Language, languageNames } from "../contexts/LanguageContex
 import { auth, db } from "../firebase";
 import { doc, collection, setDoc, serverTimestamp, updateDoc, increment } from "firebase/firestore";
 import { maskPII } from "../lib/piiFilter";
+import { generateChatResponseCached } from "../lib/ragUtils";
+
+// Note: Module-level conversationSummaryCache is now handled by semanticCache in ragUtils
+// Keeping this for backward compatibility with existing sessions
+const conversationSummaryCache = new Map<string, { summary: string; timestamp: number }>();
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Reconnection settings for Live API
+const MAX_RECONNECT_ATTEMPTS = 3;
+const INITIAL_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 8000;
 
 interface InterpreterSessionProps {
   onClose: () => void;
@@ -24,6 +35,11 @@ export function InterpreterSession({
   const voiceFeedbackRef = useRef(true);
   const startTimeRef = useRef<number | null>(null);
   const durationRef = useRef<number>(0);
+
+  // Reconnection state
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isManualStopRef = useRef(false);
 
   // Buffer queue for UI updates
   const sourceBufferRef = useRef<string[]>([]);
@@ -72,6 +88,8 @@ export function InterpreterSession({
 
   useEffect(() => {
     return () => {
+      isManualStopRef.current = true;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       stopSession();
     };
   }, []);
@@ -83,11 +101,42 @@ export function InterpreterSession({
     }
   }, [sourceLanguage, targetLanguage]);
 
+  /**
+   * Attempt to reconnect with exponential backoff
+   */
+  const attemptReconnect = () => {
+    // Don't reconnect if manually stopped
+    if (isManualStopRef.current) return;
+
+    // Don't exceed max attempts
+    if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      setError("Connection lost after multiple attempts. Please check your network and try again.");
+      setIsConnecting(false);
+      return;
+    }
+
+    const delay = Math.min(
+      INITIAL_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current),
+      MAX_RECONNECT_DELAY_MS
+    );
+
+    reconnectAttemptsRef.current++;
+    setError(`Connection lost. Reconnecting... (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
+
+    reconnectTimeoutRef.current = setTimeout(() => {
+      startSession();
+    }, delay);
+  };
+
   const getLanguageName = (lang: Language) => {
     return languageNames[lang].replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '').trim();
   };
 
   const startSession = async () => {
+    // Reset manual stop flag and reconnection state for new session
+    isManualStopRef.current = false;
+    reconnectAttemptsRef.current = 0;
+
     try {
       setIsConnecting(true);
       setError(null);
@@ -174,12 +223,16 @@ export function InterpreterSession({
             }
           },
           onerror: (err) => {
-            console.error("Live API Error:", err);
-            setError("Connection lost. Please check your network and try again.");
-            stopSession();
+            // Don't attempt reconnect if manually stopped
+            if (isManualStopRef.current) return;
+
+            // Attempt reconnection with exponential backoff
+            attemptReconnect();
           },
           onclose: () => {
-            stopSession();
+            // Don't attempt reconnect if manually stopped or already reconnecting
+            if (isManualStopRef.current || reconnectAttemptsRef.current > 0) return;
+            attemptReconnect();
           },
         },
         config: {
@@ -204,19 +257,49 @@ export function InterpreterSession({
 
   const saveConversation = async () => {
     if (!auth.currentUser || !sourceTranscriptRef.current && !targetTranscriptRef.current) return;
-    
+
+    // Create cache key from transcript (first 100 chars of each)
+    const sourceText = sourceTranscriptRef.current.trim();
+    const targetText = targetTranscriptRef.current.trim();
+    const cacheKey = `${sourceText.slice(0, 100)}_${targetText.slice(0, 100)}`;
+
+    // Check cache to avoid duplicate API calls
+    const cached = conversationSummaryCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      console.log("Using cached conversation summary");
+      // Still save to Firestore but skip API call
+      try {
+        const convRef = doc(collection(db, "users", auth.currentUser.uid, "conversations"));
+        await setDoc(convRef, {
+          summary: cached.summary,
+          keyPoints: [],
+          speakers: [],
+          sourceTranscript: sourceText,
+          targetTranscript: targetText,
+          createdAt: serverTimestamp()
+        });
+        const userRef = doc(db, "users", auth.currentUser.uid);
+        await updateDoc(userRef, {
+          usageCount: increment(1),
+          usageDuration: increment(durationRef.current)
+        });
+        durationRef.current = 0;
+      } catch (err) {
+        console.error("Failed to save cached conversation:", err);
+      }
+      return;
+    }
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      
       const prompt = `Analyze the following conversation transcript.
       1. Provide a concise summary of the conversation in ${getLanguageName(uiLanguage)}.
       2. Extract 3-5 key points in ${getLanguageName(uiLanguage)}.
       3. Identify the speakers based on the transcript (e.g., Speaker 1, Speaker 2).
-      
+
       Transcript:
       Source: ${sourceTranscriptRef.current}
       Target: ${targetTranscriptRef.current}
-      
+
       Return the response as a JSON object with the following structure:
       {
         "summary": "...",
@@ -224,15 +307,25 @@ export function InterpreterSession({
         "speakers": ["...", "..."]
       }
       `;
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-        config: { responseMimeType: "application/json" }
-      });
-      
-      const data = JSON.parse(response.text || "{}");
-      
+
+      // Use semantic cache wrapper for API call
+      const { response: responseText, cached } = await generateChatResponseCached(
+        prompt,
+        process.env.GEMINI_API_KEY || "",
+        undefined,
+        undefined,
+        "json"
+      );
+
+      console.log(cached ? "Using cached conversation summary" : "Fresh API call for summary");
+
+      const data = JSON.parse(responseText || "{}");
+
+      // Store in cache for future duplicate calls
+      if (data.summary) {
+        conversationSummaryCache.set(cacheKey, { summary: data.summary, timestamp: Date.now() });
+      }
+
       // Save to Firestore
       const convRef = doc(collection(db, "users", auth.currentUser.uid, "conversations"));
       await setDoc(convRef, {
@@ -256,11 +349,21 @@ export function InterpreterSession({
   };
 
   const stopSession = () => {
+    // Mark as manual stop to prevent reconnection attempts
+    isManualStopRef.current = true;
+
+    // Clear any pending reconnection attempts
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    reconnectAttemptsRef.current = 0;
+
     if (startTimeRef.current) {
       durationRef.current += (Date.now() - startTimeRef.current) / 1000;
       startTimeRef.current = null;
     }
-    
+
     if (recorderRef.current) {
       recorderRef.current.stop();
       recorderRef.current = null;
@@ -272,12 +375,12 @@ export function InterpreterSession({
     if (sessionRef.current) {
       sessionRef.current
         .then((session: any) => session.close())
-        .catch(console.error);
+        .catch(() => {}); // Ignore close errors
       sessionRef.current = null;
     }
     setIsRecording(false);
     setIsConnecting(false);
-    
+
     // Save conversation if there is transcript
     if (sourceTranscriptRef.current || targetTranscriptRef.current) {
       saveConversation();

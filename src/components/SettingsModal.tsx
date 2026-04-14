@@ -1,6 +1,10 @@
 import React from 'react';
 import { X } from 'lucide-react';
-import { useLanguage, languageNames } from '../contexts/LanguageContext';
+import { useLanguage, languageNames, Language } from '../contexts/LanguageContext';
+import { getLocalStorageNumber } from '../lib/storageUtils';
+
+// Valid language codes
+const VALID_LANGUAGE_CODES: Language[] = ['ko', 'en', 'th'];
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -9,12 +13,21 @@ interface SettingsModalProps {
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { uiLanguage, setUiLanguage, t } = useLanguage();
-  const [speed, setSpeed] = React.useState(parseInt(localStorage.getItem('translationSpeed') || '3'));
+  const [speed, setSpeed] = React.useState(() =>
+    getLocalStorageNumber('translationSpeed', 3, 1, 5)
+  );
 
   const handleSpeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newSpeed = parseInt(e.target.value);
+    const newSpeed = parseInt(e.target.value, 10);
     setSpeed(newSpeed);
     localStorage.setItem('translationSpeed', newSpeed.toString());
+  };
+
+  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value as Language;
+    if (VALID_LANGUAGE_CODES.includes(value)) {
+      setUiLanguage(value);
+    }
   };
 
   if (!isOpen) return null;
@@ -24,24 +37,36 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-sm">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-bold">{t('dash.settings')}</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700"
+            aria-label="Close settings"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
+
         <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">{t('dash.uiLanguage')}</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            {t('dash.uiLanguage')}
+          </label>
           <select
             value={uiLanguage}
-            onChange={(e) => setUiLanguage(e.target.value as any)}
+            onChange={handleLanguageChange}
             className="w-full bg-white border border-gray-200 text-gray-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none cursor-pointer"
           >
             {Object.entries(languageNames).map(([code, name]) => (
-              <option key={code} value={code}>{name}</option>
+              <option key={code} value={code}>
+                {name}
+              </option>
             ))}
           </select>
         </div>
+
         <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Translation Aggressiveness</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Translation Aggressiveness
+          </label>
           <input
             type="range"
             min="1"

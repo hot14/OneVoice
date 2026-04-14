@@ -1,0 +1,7 @@
+category: Design
+interface:
+  display_name: 'Figma Implement Design'
+  short_description: 'Turn Figma designs into production-ready code'
+  icon_dark: './assets/icon-dark.png'
+  icon_light: './assets/icon-light.png'
+  default_prompt: 'Implement the Figma design into production-ready code with pixel-perfect accuracy.'

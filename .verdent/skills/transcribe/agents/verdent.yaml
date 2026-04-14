@@ -1,0 +1,12 @@
+category: Media & Files
+interface:
+  display_name: Audio Transcribe
+  short_description: Transcribe audio with optional speaker diarization
+  icon_dark: ./assets/icon-dark.png
+  icon_light: ./assets/icon-light.png
+  default_prompt: Transcribe this audio file to text.
+  label:
+  - ai
+  - transcription
+  - openai
+  - accessibility

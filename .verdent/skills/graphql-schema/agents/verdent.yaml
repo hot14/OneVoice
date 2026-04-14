@@ -1,0 +1,11 @@
+category: Backend
+interface:
+  display_name: GraphQL Schema Design
+  short_description: Design robust GraphQL schemas with best practices.
+  icon_dark: './assets/icon-dark.png'
+  icon_light: './assets/icon-light.png'
+  default_prompt: Help me design a GraphQL schema.
+  label:
+    - graphql
+    - api
+    - schema-design

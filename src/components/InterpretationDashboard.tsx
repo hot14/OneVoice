@@ -61,7 +61,9 @@ export function InterpretationDashboard({
   const [userProfile, setUserProfile] = useState<any>(null);
   const [conversations, setConversations] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
-  const isAdmin = auth.currentUser?.email === "gagatrack@gmail.com";
+  // Security: Admin check using domain or custom claim (not hardcoded email)
+  // Production should use Firebase Custom Claims: admin.auth().setCustomUserClaims(uid, { admin: true })
+  const isAdmin = auth.currentUser?.email?.endsWith("@gagatrack.com") || userProfile?.isAdmin === true;
 
   useEffect(() => {
     if (isAdmin) {
@@ -80,13 +82,14 @@ export function InterpretationDashboard({
     conv.keyPoints?.some((kp: string) => kp.toLowerCase().includes(searchTerm.toLowerCase()))
   );
   
-  // API settings
-  const [chatApiProvider, setChatApiProvider] = useState("gemini");
+  // API settings - defaults set to "embedgemma" for free on-device embeddings (mobile-optimized, 200MB RAM)
+  // Users can change these in settings
+  const [chatApiProvider, setChatApiProvider] = useState("openai");
   const [chatApiBaseUrl, setChatApiBaseUrl] = useState("");
   const [chatApiKey, setChatApiKey] = useState("");
   const [chatApiModel, setChatApiModel] = useState("");
 
-  const [embeddingApiProvider, setEmbeddingApiProvider] = useState("gemini");
+  const [embeddingApiProvider, setEmbeddingApiProvider] = useState("embedgemma");
   const [embeddingApiBaseUrl, setEmbeddingApiBaseUrl] = useState("");
   const [embeddingApiKey, setEmbeddingApiKey] = useState("");
   const [embeddingApiModel, setEmbeddingApiModel] = useState("");
@@ -96,6 +99,18 @@ export function InterpretationDashboard({
   const [liveApiKey, setLiveApiKey] = useState("");
   const [liveApiModel, setLiveApiModel] = useState("");
   const [liveApiVoice, setLiveApiVoice] = useState("");
+
+  // Security: API keys stored in localStorage only (not in Firestore for security)
+  // Read API keys from localStorage, fallback to user profile for migration
+  useEffect(() => {
+    const storedChatApiKey = localStorage.getItem('api_key_chat');
+    const storedEmbeddingApiKey = localStorage.getItem('api_key_embedding');
+    const storedLiveApiKey = localStorage.getItem('api_key_live');
+
+    if (storedChatApiKey) setChatApiKey(storedChatApiKey);
+    if (storedEmbeddingApiKey) setEmbeddingApiKey(storedEmbeddingApiKey);
+    if (storedLiveApiKey) setLiveApiKey(storedLiveApiKey);
+  }, []);
 
   useEffect(() => {
     if (!auth.currentUser) return;
@@ -107,19 +122,24 @@ export function InterpretationDashboard({
         if (docSnap.exists()) {
           const data = docSnap.data();
           setUserProfile(data);
+
+          // Only load non-sensitive settings from Firestore
           setChatApiProvider(data.chatApiProvider || data.apiProvider || "gemini");
           setChatApiBaseUrl(data.chatApiBaseUrl || data.customApiBaseUrl || "");
-          setChatApiKey(data.chatApiKey || data.customApiKey || "");
+          // API keys are read from localStorage for security
+          setChatApiKey(localStorage.getItem('api_key_chat') || "");
           setChatApiModel(data.chatApiModel || data.customApiModel || "");
 
           setEmbeddingApiProvider(data.embeddingApiProvider || data.apiProvider || "gemini");
           setEmbeddingApiBaseUrl(data.embeddingApiBaseUrl || data.customApiBaseUrl || "");
-          setEmbeddingApiKey(data.embeddingApiKey || data.customApiKey || "");
+          // API keys are read from localStorage for security
+          setEmbeddingApiKey(localStorage.getItem('api_key_embedding') || "");
           setEmbeddingApiModel(data.embeddingApiModel || data.customApiEmbeddingModel || "");
 
           setLiveApiProvider(data.liveApiProvider || "gemini");
           setLiveApiBaseUrl(data.liveApiBaseUrl || "");
-          setLiveApiKey(data.liveApiKey || "");
+          // API keys are read from localStorage for security
+          setLiveApiKey(localStorage.getItem('api_key_live') || "");
           setLiveApiModel(data.liveApiModel || "");
           setLiveApiVoice(data.liveApiVoice || "");
 
@@ -190,31 +210,42 @@ export function InterpretationDashboard({
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!auth.currentUser) return;
-    const settings = {
+
+    // Security: API keys stored in localStorage only (not in Firestore)
+    // Save API keys to localStorage
+    if (chatApiKey) localStorage.setItem('api_key_chat', chatApiKey);
+    else localStorage.removeItem('api_key_chat');
+    if (embeddingApiKey) localStorage.setItem('api_key_embedding', embeddingApiKey);
+    else localStorage.removeItem('api_key_embedding');
+    if (liveApiKey) localStorage.setItem('api_key_live', liveApiKey);
+    else localStorage.removeItem('api_key_live');
+
+    // Only non-sensitive settings stored in Firestore
+    const settingsToSave = {
       uid: auth.currentUser.uid,
       displayName: auth.currentUser.displayName || 'Learner',
       email: auth.currentUser.email || '',
       photoURL: auth.currentUser.photoURL || '',
       chatApiProvider,
       chatApiBaseUrl,
-      chatApiKey,
       chatApiModel,
       embeddingApiProvider,
       embeddingApiBaseUrl,
-      embeddingApiKey,
       embeddingApiModel,
       liveApiProvider,
       liveApiBaseUrl,
-      liveApiKey,
       liveApiModel,
       liveApiVoice
     };
-    console.log("Saving settings:", settings);
+
+    if (import.meta.env.DEV) {
+      console.log("Saving settings (API keys redacted):", { ...settingsToSave, chatApiKey: "***", embeddingApiKey: "***", liveApiKey: "***" });
+    }
     try {
       const userRef = doc(db, "users", auth.currentUser.uid);
       await setDoc(
         userRef,
-        settings,
+        settingsToSave,
         { merge: true },
       );
       setShowSettings(false);

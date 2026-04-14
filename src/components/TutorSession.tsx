@@ -14,6 +14,46 @@ import {
 } from "firebase/firestore";
 import { handleFirestoreError, OperationType } from "../lib/firestoreUtils";
 import { retrieveRelevantChunks, generateChatResponse } from "../lib/ragUtils";
+import { normalizePrompt } from "../lib/promptNormalizer";
+import { debug } from "../lib/logger";
+
+// Debouncing: 동일 쿼리 중복 호출 방지
+const pendingQueries = new Map<string, Promise<any>>();
+const DEBOUNCE_DELAY_MS = 300;
+
+/**
+ * Debounced retrieveRelevantChunks - 동일/유사 쿼리 중복 호출 방지
+ */
+async function debouncedRetrieveRelevantChunks(
+  query: string,
+  materialIds: string[],
+  apiKey: string,
+  apiSettings: any,
+  topK: number
+): Promise<any[]> {
+  const key = normalizePrompt(query);
+
+  // 이미 진행 중인 쿼리가 있으면 해당 Promise 반환
+  if (pendingQueries.has(key)) {
+    debug("Debounce: returning pending query for:", key.slice(0, 50));
+    return pendingQueries.get(key)!;
+  }
+
+  // 새 쿼리 시작
+  const promise = (async () => {
+    try {
+      return await retrieveRelevantChunks(query, materialIds, apiKey, apiSettings, topK);
+    } finally {
+      // 완료 후 맵에서 제거
+      setTimeout(() => {
+        pendingQueries.delete(key);
+      }, DEBOUNCE_DELAY_MS);
+    }
+  })();
+
+  pendingQueries.set(key, promise);
+  return promise;
+}
 
 interface TutorSessionProps {
   onClose: () => void;
@@ -235,7 +275,7 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
                             apiKey: userProfile?.embeddingApiKey || userProfile?.customApiKey || "",
                             model: userProfile?.embeddingApiModel || userProfile?.customApiEmbeddingModel || ""
                           };
-                          const chunks = await retrieveRelevantChunks(query, materialIds, apiKey, apiSettings, 3);
+                          const chunks = await debouncedRetrieveRelevantChunks(query, materialIds, apiKey, apiSettings, 3);
                           return {
                             id: call.id,
                             name: call.name,
