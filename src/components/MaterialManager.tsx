@@ -29,6 +29,7 @@ import { useLanguage } from "../contexts/LanguageContext";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase";
 import { processAndStoreMaterial, ApiSettings } from "../lib/ragUtils";
+import { error as loggerError } from "../lib/logger";
 
 interface MaterialManagerProps {
   onClose: () => void;
@@ -58,7 +59,7 @@ export function MaterialManager({
   const [folderPath, setFolderPath] = useState<{id: string, name: string}[]>([]);
 
   const handleError = (err: any, defaultMessage: string) => {
-    console.error(err);
+    loggerError("MaterialManager error:", err?.message || defaultMessage);
     if (
       err.message?.includes("Google Drive API has not been used") ||
       err.message?.includes("SERVICE_DISABLED")

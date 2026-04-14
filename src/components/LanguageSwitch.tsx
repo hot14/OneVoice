@@ -1,6 +1,7 @@
 import { useLanguage, Language, languageNames } from '../contexts/LanguageContext';
 import { auth, db } from '../firebase';
 import { doc, setDoc } from 'firebase/firestore';
+import { error as loggerError } from '../lib/logger';
 
 export function LanguageSwitch() {
   const { sourceLanguage, targetLanguage, setSourceLanguage, setTargetLanguage } = useLanguage();
@@ -10,11 +11,11 @@ export function LanguageSwitch() {
     if (auth.currentUser) {
       try {
         const userRef = doc(db, "users", auth.currentUser.uid);
-        await setDoc(userRef, { 
-          nativeLanguage: newLang 
+        await setDoc(userRef, {
+          nativeLanguage: newLang
         }, { merge: true });
       } catch (error) {
-        console.error("Failed to update language preference in Firestore:", error);
+        loggerError("Failed to update language preference:", error instanceof Error ? error.message : 'Unknown error');
       }
     }
   };
