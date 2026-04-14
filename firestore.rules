@@ -35,9 +35,9 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow update: if (isOwner(userId) && isImmutable('uid') && isImmutable('usageDuration')) || isAdmin();
+      allow update: if (isOwner(userId) && isImmutable('uid')) || isAdmin();
       allow delete: if isAdmin();
-      allow create: if isOwner(userId);
+      allow create: if isOwner(userId) || isAdmin();
       
       match /vocabulary/{vocabId} {
         allow read: if isOwner(userId) || isAdmin();
