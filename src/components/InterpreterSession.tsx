@@ -19,6 +19,10 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 const INITIAL_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 8000;
 
+// Circuit breaker for reconnection
+const CIRCUIT_BREAKER_THRESHOLD = 5;
+let consecutiveFailures = 0;
+
 interface InterpreterSessionProps {
   onClose: () => void;
 }
@@ -41,10 +45,10 @@ export function InterpreterSession({
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isManualStopRef = useRef(false);
 
-  // Buffer queue for UI updates
+  // Buffer queue for UI updates (using RAF)
   const sourceBufferRef = useRef<string[]>([]);
   const targetBufferRef = useRef<string[]>([]);
-  const bufferTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const bufferTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     voiceFeedbackRef.current = voiceFeedbackEnabled;
@@ -55,7 +59,7 @@ export function InterpreterSession({
   const sourceTranscriptDivRef = useRef<HTMLDivElement>(null);
   const targetTranscriptDivRef = useRef<HTMLDivElement>(null);
 
-  const processBuffer = () => {
+  const processBufferRAF = () => {
     if (sourceBufferRef.current.length > 0) {
       const text = sourceBufferRef.current.shift()!;
       sourceTranscriptRef.current += text;
@@ -72,13 +76,19 @@ export function InterpreterSession({
         targetTranscriptDivRef.current.scrollTop = targetTranscriptDivRef.current.scrollHeight;
       }
     }
-    bufferTimerRef.current = setTimeout(processBuffer, 20); // 20ms buffer time
+    // Continue processing if there are more items
+    if (sourceBufferRef.current.length > 0 || targetBufferRef.current.length > 0) {
+      bufferTimerRef.current = requestAnimationFrame(processBufferRAF);
+    }
   };
 
   useEffect(() => {
-    bufferTimerRef.current = setTimeout(processBuffer, 50);
+    // Use requestAnimationFrame for smoother buffer processing
+    bufferTimerRef.current = requestAnimationFrame(processBufferRAF);
     return () => {
-      if (bufferTimerRef.current) clearTimeout(bufferTimerRef.current);
+      if (bufferTimerRef.current) {
+        cancelAnimationFrame(bufferTimerRef.current);
+      }
     };
   }, []);
 
@@ -102,14 +112,23 @@ export function InterpreterSession({
   }, [sourceLanguage, targetLanguage]);
 
   /**
-   * Attempt to reconnect with exponential backoff
+   * Attempt to reconnect with exponential backoff and circuit breaker
    */
   const attemptReconnect = () => {
     // Don't reconnect if manually stopped
     if (isManualStopRef.current) return;
 
+    // Circuit breaker: prevent infinite retries
+    if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+      setError("Connection issues detected. Please refresh the page to try again.");
+      setIsConnecting(false);
+      console.warn(`Circuit breaker triggered after ${consecutiveFailures} consecutive failures`);
+      return;
+    }
+
     // Don't exceed max attempts
     if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      consecutiveFailures++;
       setError("Connection lost after multiple attempts. Please check your network and try again.");
       setIsConnecting(false);
       return;
@@ -175,6 +194,10 @@ export function InterpreterSession({
         model: "gemini-3.1-flash-live-preview",
         callbacks: {
           onopen: async () => {
+            // Reset circuit breaker on successful connection
+            consecutiveFailures = 0;
+            reconnectAttemptsRef.current = 0;
+            
             setIsRecording(true);
             sourceTranscriptRef.current = "";
             targetTranscriptRef.current = "";

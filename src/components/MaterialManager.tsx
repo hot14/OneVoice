@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   X,
   Upload,
@@ -28,15 +28,19 @@ import {
 import { useLanguage } from "../contexts/LanguageContext";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { auth, db } from "../firebase";
-import { processAndStoreMaterial, ApiSettings } from "../lib/ragUtils";
+import { processAndStoreMaterial } from "../lib/ragUtils";
 import { error as loggerError } from "../lib/logger";
+import type { DriveFile, FolderPath, SelectedMaterial, ProcessingFileEntry } from "../types";
+
+// Processing state map type
+type ProcessingState = Map<string, ProcessingFileEntry>;
 
 interface MaterialManagerProps {
   onClose: () => void;
   currentMaterial: string;
   onMaterialSelect: (content: string) => void;
-  chatApiSettings?: ApiSettings;
-  embeddingApiSettings?: ApiSettings;
+  chatApiSettings?: any; // Keep as any for backward compatibility
+  embeddingApiSettings?: any;
 }
 
 export function MaterialManager({
@@ -48,15 +52,29 @@ export function MaterialManager({
 }: MaterialManagerProps) {
   const { t, sourceLanguage } = useLanguage();
   const language = sourceLanguage;
-  const [files, setFiles] = useState<any[]>([]);
+  const [files, setFiles] = useState<DriveFile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<React.ReactNode | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<{id: string, name: string, content: string}[]>([]);
-  const [folderId, setFolderId] = useState<string | null>(null); // Root app folder
+  const [selectedFiles, setSelectedFiles] = useState<SelectedMaterial[]>([]);
+  const [folderId, setFolderId] = useState<string | null>(null);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
-  const [folderPath, setFolderPath] = useState<{id: string, name: string}[]>([]);
+  const [folderPath, setFolderPath] = useState<FolderPath[]>([]);
+  const [processingState, setProcessingState] = useState<ProcessingState>(new Map());
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Helper to check if a file is being processed
+  const isFileProcessing = useCallback((fileId: string): boolean => {
+    const entry = processingState.get(fileId);
+    return entry?.status === 'processing';
+  }, [processingState]);
+
+  // Helper to get processing error for a file
+  const getProcessingError = useCallback((fileId: string): string | undefined => {
+    const entry = processingState.get(fileId);
+    return entry?.status === 'error' ? entry.error : undefined;
+  }, [processingState]);
 
   const handleError = (err: any, defaultMessage: string) => {
     loggerError("MaterialManager error:", err?.message || defaultMessage);
@@ -103,6 +121,11 @@ export function MaterialManager({
     } else {
       setError(t("materials.authRequired"));
     }
+
+    // Cleanup abort controller on unmount
+    return () => {
+      abortControllerRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -113,7 +136,7 @@ export function MaterialManager({
     try {
       const parsed = JSON.parse(currentMaterial);
       if (Array.isArray(parsed)) {
-        setSelectedFiles(parsed);
+        setSelectedFiles(parsed as SelectedMaterial[]);
       }
     } catch (e) {
       // Legacy string format, ignore or clear
@@ -234,11 +257,9 @@ export function MaterialManager({
     }
   };
 
-  const [processingFiles, setProcessingFiles] = useState<Set<string>>(new Set());
-
   const handleToggleFile = async (fileId: string, fileName: string) => {
     if (!token || !auth.currentUser) return;
-    if (processingFiles.has(fileId)) return; // Prevent double click
+    if (isFileProcessing(fileId)) return; // Prevent double click
     
     setError(null);
     
@@ -250,15 +271,20 @@ export function MaterialManager({
       newSelected.splice(existingIndex, 1);
     } else {
       // Select and Process
-      setProcessingFiles(prev => new Set(prev).add(fileId));
+      setProcessingState(prev => {
+        const next = new Map(prev);
+        next.set(fileId, { id: fileId, status: 'processing' });
+        return next;
+      });
+      
       try {
         const uid = auth.currentUser.uid;
         const materialRef = doc(db, "users", uid, "materials", fileId);
         const materialSnap = await getDoc(materialRef);
         
-        let materialData;
+        let materialData: { summary?: string } | null = null;
         if (materialSnap.exists()) {
-          materialData = materialSnap.data();
+          materialData = materialSnap.data() as { summary?: string };
         } else {
           // Need to process
           const content = await getFileContent(fileId, token);
@@ -269,12 +295,23 @@ export function MaterialManager({
           materialData = await processAndStoreMaterial(fileId, fileName, content, apiKey, chatApiSettings, embeddingApiSettings);
         }
         
+        if (!materialData?.summary) {
+          throw new Error("Material processing returned no summary");
+        }
+        
         newSelected.push({ id: fileId, name: fileName, content: materialData.summary });
+        
+        // Mark as completed
+        setProcessingState(prev => {
+          const next = new Map(prev);
+          next.set(fileId, { id: fileId, status: 'completed' });
+          return next;
+        });
       } catch (err: any) {
         handleError(err, language === 'ko' ? "자료 처리 중 오류가 발생했습니다." : "Error processing material.");
-        setProcessingFiles(prev => {
-          const next = new Set(prev);
-          next.delete(fileId);
+        setProcessingState(prev => {
+          const next = new Map(prev);
+          next.set(fileId, { id: fileId, status: 'error', error: err.message });
           return next;
         });
         return;
@@ -297,12 +334,6 @@ export function MaterialManager({
         currentMaterial: newContentString 
       }, { merge: true });
     }
-    
-    setProcessingFiles(prev => {
-      const next = new Set(prev);
-      next.delete(fileId);
-      return next;
-    });
   };
 
   const handleDeleteFile = async (fileId: string, e: React.MouseEvent) => {
@@ -461,16 +492,17 @@ export function MaterialManager({
                     {files.map((file) => {
                       const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
                       const isSelected = selectedFiles.some(f => f.id === file.id);
-                      const isFileProcessing = processingFiles.has(file.id);
+                      const fileIsProcessing = isFileProcessing(file.id);
+                      const fileError = getProcessingError(file.id);
                       return (
                         <div
                           key={file.id}
                           onClick={() => {
-                            if (isFileProcessing) return;
+                            if (fileIsProcessing) return;
                             isFolder ? handleNavigateFolder({id: file.id, name: file.name}) : handleToggleFile(file.id, file.name);
                           }}
                           className={`flex items-center justify-between p-3 rounded-xl border transition-all ${
-                            isFileProcessing ? "opacity-70 cursor-not-allowed" : "cursor-pointer"
+                            fileIsProcessing ? "opacity-70 cursor-not-allowed" : "cursor-pointer"
                           } ${
                             isSelected
                               ? "border-indigo-500 bg-indigo-50"
@@ -498,7 +530,7 @@ export function MaterialManager({
                           </div>
 
                           <div className="flex items-center gap-1 shrink-0">
-                            {isFileProcessing ? (
+                            {fileIsProcessing ? (
                               <div className="flex items-center gap-2 mr-2">
                                 <span className="text-xs text-indigo-600 font-medium">{language === 'ko' ? '분석 중...' : 'Processing...'}</span>
                                 <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
@@ -508,10 +540,13 @@ export function MaterialManager({
                                 {isSelected && <CheckCircle2 className="w-4 h-4 text-white" />}
                               </div>
                             )}
+                            {fileError && (
+                              <span className="text-xs text-red-500 mr-2" title={fileError}>!</span>
+                            )}
                             <button
                               onClick={(e) => handleRename(file.id, file.name, e)}
                               className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"
-                              disabled={isLoading || isFileProcessing}
+                              disabled={isLoading || fileIsProcessing}
                               title={language === 'ko' ? '이름 변경' : 'Rename'}
                             >
                               <Edit2 className="w-4 h-4" />
@@ -519,7 +554,7 @@ export function MaterialManager({
                             <button
                               onClick={(e) => handleDeleteFile(file.id, e)}
                               className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
-                              disabled={isLoading || isFileProcessing}
+                              disabled={isLoading || fileIsProcessing}
                               title={language === 'ko' ? '삭제' : 'Delete'}
                             >
                               <Trash2 className="w-4 h-4" />

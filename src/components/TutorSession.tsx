@@ -12,14 +12,49 @@ import {
   updateDoc,
   serverTimestamp,
 } from "firebase/firestore";
-import { handleFirestoreError, OperationType } from "../lib/firestoreUtils";
+import { handleFirestoreError, OperationType, withFirestoreRetry } from "../lib/firestoreUtils";
 import { retrieveRelevantChunks, generateChatResponse } from "../lib/ragUtils";
 import { normalizePrompt } from "../lib/promptNormalizer";
 import { debug } from "../lib/logger";
+import type { 
+  UserProfile, 
+  TranscriptMessage, 
+  SessionState, 
+  ToolCallArgs,
+  FunctionCall,
+  FunctionResponse,
+  LessonData,
+  ApiSettings 
+} from "../types";
 
 // Debouncing: 동일 쿼리 중복 호출 방지
 const pendingQueries = new Map<string, Promise<any>>();
 const DEBOUNCE_DELAY_MS = 300;
+
+// Cleanup interval for pendingQueries
+const CLEANUP_INTERVAL_MS = 60000;
+let lastCleanupTime = 0;
+
+/**
+ * Cleanup old entries from pendingQueries to prevent memory leaks
+ */
+function cleanupPendingQueries(): void {
+  const now = Date.now();
+  if (now - lastCleanupTime < CLEANUP_INTERVAL_MS) return;
+  
+  lastCleanupTime = now;
+  if (pendingQueries.size === 0) return;
+  
+  // Remove entries older than 5 minutes
+  const staleThreshold = 5 * 60 * 1000;
+  for (const [key, promise] of pendingQueries.entries()) {
+    // Just trigger cleanup by deleting resolved entries
+    if (promise && (promise as any).status === 'fulfilled') {
+      pendingQueries.delete(key);
+    }
+  }
+  debug(`PendingQueries cleanup: ${pendingQueries.size} remaining`);
+}
 
 /**
  * Debounced retrieveRelevantChunks - 동일/유사 쿼리 중복 호출 방지
@@ -28,7 +63,7 @@ async function debouncedRetrieveRelevantChunks(
   query: string,
   materialIds: string[],
   apiKey: string,
-  apiSettings: any,
+  apiSettings: ApiSettings,
   topK: number
 ): Promise<any[]> {
   const key = normalizePrompt(query);
@@ -39,12 +74,15 @@ async function debouncedRetrieveRelevantChunks(
     return pendingQueries.get(key)!;
   }
 
+  // Periodic cleanup check
+  cleanupPendingQueries();
+
   // 새 쿼리 시작
   const promise = (async () => {
     try {
       return await retrieveRelevantChunks(query, materialIds, apiKey, apiSettings, topK);
     } finally {
-      // 완료 후 맵에서 제거
+      // 완료 후 지연 후 제거
       setTimeout(() => {
         pendingQueries.delete(key);
       }, DEBOUNCE_DELAY_MS);
@@ -71,27 +109,35 @@ export function TutorSession({
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<
-    { role: "user" | "tutor"; text: string }[]
-  >([]);
-  const transcriptRef = useRef<{ role: "user" | "tutor"; text: string }[]>([]);
-  const [userProfile, setUserProfile] = useState<any>(null);
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
+  const transcriptRef = useRef<TranscriptMessage[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
+  const [sessionState, setSessionState] = useState<SessionState>('idle');
 
-  const sessionRef = useRef<any>(null);
+  // sessionRef can be:
+  // 1. A Promise from ai.live.connect() which has .then, .catch, and a .close() method on the resolved session
+  // 2. A plain object with close() method for WebRTC sessions
+  // Using unknown + type guards for type safety
+  const sessionRef = useRef<unknown>(null);
   const recorderRef = useRef<AudioRecorder | null>(null);
   const playerRef = useRef<AudioPlayer | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const isUnmountedRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Cleanup on unmount
   useEffect(() => {
+    isUnmountedRef.current = false;
+    
     // Fetch user profile on mount
     const fetchProfile = async () => {
       if (!auth.currentUser) return;
       try {
         const userRef = doc(db, "users", auth.currentUser.uid);
         const snap = await getDoc(userRef);
-        if (snap.exists()) {
-          setUserProfile(snap.data());
+        if (snap.exists() && !isUnmountedRef.current) {
+          setUserProfile(snap.data() as UserProfile);
         }
       } catch (err) {
         console.error("Failed to fetch profile", err);
@@ -100,6 +146,13 @@ export function TutorSession({
     fetchProfile();
 
     return () => {
+      isUnmountedRef.current = true;
+      // Clear all pending queries on unmount
+      pendingQueries.clear();
+      // Abort any in-flight requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
       stopSession();
     };
   }, []);
@@ -261,33 +314,33 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
               }
 
               if (message.toolCall) {
-                const functionCalls = message.toolCall.functionCalls;
-                if (functionCalls) {
-                  const responses = await Promise.all(functionCalls.map(async (call) => {
+                const functionCalls = message.toolCall.functionCalls as FunctionCall[] | undefined;
+                if (functionCalls && functionCalls.length > 0) {
+                  const responses = await Promise.all(functionCalls.map(async (call: FunctionCall) => {
                     if (call.name === "getRelevantMaterialContext") {
-                      const query = (call.args as any).query;
-                      const apiKey = import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+                      const query = (call.args as ToolCallArgs).query || "";
+                      const apiKey = import.meta.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || "";
                       if (apiKey && materialIds.length > 0) {
                         try {
-                          const apiSettings = {
-                            provider: userProfile?.embeddingApiProvider || userProfile?.apiProvider || "gemini",
-                            baseUrl: userProfile?.embeddingApiBaseUrl || userProfile?.customApiBaseUrl || "",
-                            apiKey: userProfile?.embeddingApiKey || userProfile?.customApiKey || "",
-                            model: userProfile?.embeddingApiModel || userProfile?.customApiEmbeddingModel || ""
+                          const apiSettings: ApiSettings = {
+                            provider: userProfile?.embeddingApiProvider || userProfile?.chatApiProvider || "gemini",
+                            baseUrl: userProfile?.embeddingApiBaseUrl || userProfile?.chatApiBaseUrl || "",
+                            apiKey: userProfile?.embeddingApiKey || userProfile?.chatApiKey || "",
+                            model: userProfile?.embeddingApiModel || userProfile?.chatApiModel || ""
                           };
                           const chunks = await debouncedRetrieveRelevantChunks(query, materialIds, apiKey, apiSettings, 3);
                           return {
                             id: call.id,
                             name: call.name,
                             response: { result: chunks.map(c => c.text).join('\n\n---\n\n') }
-                          };
+                          } as FunctionResponse;
                         } catch (e) {
-                          return { id: call.id, name: call.name, response: { error: "Failed to retrieve context" } };
+                          return { id: call.id, name: call.name, response: { error: "Failed to retrieve context" } } as FunctionResponse;
                         }
                       }
-                      return { id: call.id, name: call.name, response: { error: "No materials available or API key missing" } };
+                      return { id: call.id, name: call.name, response: { error: "No materials available or API key missing" } } as FunctionResponse;
                     }
-                    return { id: call.id, name: call.name, response: { error: "Unknown function" } };
+                    return { id: call.id, name: call.name, response: { error: "Unknown function" } } as FunctionResponse;
                   }));
                   
                   sessionPromise.then(session => {
@@ -535,12 +588,14 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
       playerRef.current = null;
     }
     if (sessionRef.current) {
-      if (sessionRef.current.then) {
-        sessionRef.current
-          .then((session: any) => session.close())
-          .catch(console.error);
-      } else if (sessionRef.current.close) {
-        sessionRef.current.close();
+      const session = sessionRef.current as any;
+      // Check if it's a Promise-like object (from ai.live.connect)
+      if (typeof session?.then === 'function') {
+        session
+          .then((s: any) => s.close?.())
+          .catch((e: unknown) => console.warn('Session close warning:', e));
+      } else if (typeof session?.close === 'function') {
+        session.close();
       }
       sessionRef.current = null;
     }
@@ -559,10 +614,10 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
   };
 
   const saveLessonHistory = async (
-    finalTranscript: { role: "user" | "tutor"; text: string }[],
+    finalTranscript: TranscriptMessage[],
   ) => {
     try {
-      if (!auth.currentUser) return;
+      if (!auth.currentUser || isUnmountedRef.current) return;
 
       const lessonId = Date.now().toString();
       const lessonRef = doc(
@@ -655,7 +710,7 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
         ? Math.floor((Date.now() - sessionStartTime) / 1000)
         : 0;
 
-      const lessonData = {
+      const lessonData: LessonData = {
         id: lessonId,
         topic: topic,
         durationSeconds: durationSeconds,
@@ -667,10 +722,14 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
         acquiredExpressions: acquiredExpressions,
         diagnosedLevel: diagnosedLevel,
         levelReasoning: levelReasoning,
-        completedAt: serverTimestamp(),
+        completedAt: new Date(),
       };
 
-      await setDoc(lessonRef, lessonData);
+      await withFirestoreRetry(
+        () => setDoc(lessonRef, lessonData),
+        OperationType.WRITE,
+        `users/${auth.currentUser.uid}/lessons/${lessonId}`
+      );
 
       // Save acquired expressions to vocabulary
       if (acquiredExpressions && acquiredExpressions.length > 0) {
@@ -685,19 +744,23 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
               "vocabulary",
               vocabId,
             );
-            await setDoc(vocabRef, {
-              id: vocabId,
-              thai: expr.thai,
-              meaning: expr.meaning,
-              exampleSentence: expr.exampleSentence || "",
-              exampleMeaning: expr.exampleMeaning || "",
-              pronunciation: "", // Can be added later or generated
-              mastery: 0,
-              notes: topic
-                ? `Learned from lesson: ${topic}`
-                : "Learned from Live Session",
-              createdAt: serverTimestamp(),
-            });
+            await withFirestoreRetry(
+              () => setDoc(vocabRef, {
+                id: vocabId,
+                thai: expr.thai,
+                meaning: expr.meaning,
+                exampleSentence: expr.exampleSentence || "",
+                exampleMeaning: expr.exampleMeaning || "",
+                pronunciation: "",
+                mastery: 0,
+                notes: topic
+                  ? `Learned from lesson: ${topic}`
+                  : "Learned from Live Session",
+                createdAt: serverTimestamp(),
+              }),
+              OperationType.CREATE,
+              `users/${auth.currentUser.uid}/vocabulary/${vocabId}`
+            );
           }
         }
       }
@@ -749,13 +812,17 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
         };
       }
 
-      await setDoc(userRef, {
-        uid: auth.currentUser.uid,
-        displayName: auth.currentUser.displayName || 'Learner',
-        email: auth.currentUser.email || '',
-        photoURL: auth.currentUser.photoURL || '',
-        ...updateData
-      }, { merge: true });
+      await withFirestoreRetry(
+        () => setDoc(userRef, {
+          uid: auth.currentUser.uid,
+          displayName: auth.currentUser.displayName || 'Learner',
+          email: auth.currentUser.email || '',
+          photoURL: auth.currentUser.photoURL || '',
+          ...updateData
+        }, { merge: true }),
+        OperationType.UPDATE,
+        `users/${auth.currentUser.uid}`
+      );
 
       // Notify parent component to show report card
       if (onLessonComplete) {

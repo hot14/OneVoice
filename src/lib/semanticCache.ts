@@ -4,6 +4,7 @@
 
 import { getCachedResponse, setCachedResponse, normalizePrompt } from './promptNormalizer';
 import { debug, warn } from './logger';
+import { getEmbedder } from './embeddingModel';
 
 // 시맨틱 캐시 설정
 const SEMANTIC_THRESHOLD = 0.92;          // Cosine similarity threshold
@@ -17,55 +18,8 @@ interface SemanticCacheItem {
   timestamp: number;
 }
 
-// 시맨틱 캐시 저장소
+// 시맨틱 캐시 저장소 (LRU eviction)
 const semanticCache: SemanticCacheItem[] = [];
-
-// Dynamic import type for transformers.js
-type EmbeddingPipeline = Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>>;
-
-// EmbeddingGemma 모델 인스턴스 (Singleton)
-let embedder: EmbeddingPipeline | null = null;
-let modelLoadingPromise: Promise<EmbeddingPipeline> | null = null;
-
-/**
- * Embed딩Gemma 모델을 얻음 (Singleton 패턴)
- * WebGPU 가용성 자동 체크 - 동적 임포트로 지연 로드
- */
-async function getEmbedder(): Promise<EmbeddingPipeline | null> {
-  // 이미 로드됨
-  if (embedder) return embedder;
-
-  // 현재 로딩 중
-  if (modelLoadingPromise) return modelLoadingPromise;
-
-  // WebGPU 가용성 체크
-  if (typeof navigator !== 'undefined' && !(navigator as any).gpu) {
-    debug("WebGPU not available - semantic cache disabled");
-    return null;
-  }
-
-  modelLoadingPromise = (async () => {
-    try {
-      debug("Loading EmbeddingGemma for semantic cache...");
-      // Dynamic import - only load when needed
-      const { pipeline, env } = await import('@huggingface/transformers');
-      env.useBrowserCache = true;
-
-      const model = await pipeline('feature-extraction', 'Xenova/embedding-gemma', {
-        device: 'webgpu',
-        dtype: 'q8',
-      }) as EmbeddingPipeline;
-      debug("EmbeddingGemma loaded for semantic cache");
-      return model;
-    } catch (error) {
-      warn("Failed to load EmbeddingGemma for semantic cache:", error);
-      modelLoadingPromise = null;
-      return null;
-    }
-  })();
-
-  return modelLoadingPromise;
-}
 
 /**
  * Cosine similarity 계산

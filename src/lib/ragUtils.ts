@@ -2,60 +2,13 @@ import { GoogleGenAI } from "@google/genai";
 import { db, auth } from "../firebase";
 import { doc, setDoc, getDoc, collection, writeBatch, getDocs, serverTimestamp, query, orderBy } from "firebase/firestore";
 import { debug, warn, error as loggerError } from './logger';
+import { getEmbedder } from './embeddingModel';
 
 export interface ApiSettings {
   provider: string; // 'gemini' | 'custom' | 'openai' | 'embedgemma'
   baseUrl?: string;
   apiKey?: string;
   model?: string;
-}
-
-// Dynamic import type for transformers.js
-type EmbeddingPipeline = Awaited<ReturnType<typeof import('@huggingface/transformers').pipeline>>;
-
-// EmbeddingGemma model - optimized for on-device (200MB RAM with quantization)
-// Falls back to API if WebGPU is unavailable
-let embeddingModel: EmbeddingPipeline | null = null;
-let modelLoadingPromise: Promise<EmbeddingPipeline> | null = null;
-
-async function getEmbeddingModel(): Promise<EmbeddingPipeline | null> {
-  // Already loaded
-  if (embeddingModel) return embeddingModel;
-
-  // Currently loading
-  if (modelLoadingPromise) return modelLoadingPromise;
-
-  // Check if WebGPU is available (required for mobile performance)
-  // Note: WebGPU API is available in Chrome/Edge, Safari 16.4+, Firefox nightly
-  if (typeof navigator !== 'undefined' && !(navigator as any).gpu) {
-    debug("WebGPU not available - using API fallback for embeddings");
-    return null;
-  }
-
-  modelLoadingPromise = (async () => {
-    try {
-      debug("Loading EmbeddingGemma model for on-device embeddings...");
-      // Dynamic import - only load when needed
-      const { pipeline, env } = await import('@huggingface/transformers');
-      env.useBrowserCache = true;
-      env.allowLocalModels = false;
-
-      // Using EmbeddingGemma - 308M params, optimized for mobile (200MB RAM)
-      // Supports 100+ languages including Korean, Japanese, Chinese
-      const model = await pipeline('feature-extraction', 'Xenova/embedding-gemma', {
-        device: 'webgpu',
-        dtype: 'q8', // Quantized to 8-bit for memory efficiency
-      }) as EmbeddingPipeline;
-      debug("EmbeddingGemma model loaded successfully");
-      return model;
-    } catch (error) {
-      warn("Failed to load EmbeddingGemma, falling back to API:", error);
-      modelLoadingPromise = null;
-      return null;
-    }
-  })();
-
-  return modelLoadingPromise;
 }
 
 export function chunkText(text: string, chunkSize = 3000, overlap = 500): string[] {
@@ -84,7 +37,7 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
 
   // Try on-device EmbeddingGemma first (free, mobile-optimized)
   if (provider === 'embedgemma' || provider === 'auto') {
-    const model = await getEmbeddingModel();
+    const model = await getEmbedder();
     if (model) {
       const embeddings: number[][] = [];
       for (const text of texts) {
@@ -369,7 +322,7 @@ export async function retrieveRelevantChunks(queryText: string, materialIds: str
   try {
     // Try EmbeddingGemma first (free, on-device)
     if (provider === 'embedgemma' || provider === 'auto') {
-      const model = await getEmbeddingModel();
+      const model = await getEmbedder();
       if (model) {
         const result = await (model as any)(queryText, { pooling: 'mean', normalize: true });
         queryEmbedding = Array.from(result.data as unknown as number[]);

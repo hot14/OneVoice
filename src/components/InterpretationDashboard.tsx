@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { auth, db } from "../firebase";
 import {
   collection,
@@ -6,30 +6,26 @@ import {
   onSnapshot,
   orderBy,
   limit,
-  where,
   doc,
   setDoc,
-  updateDoc,
   serverTimestamp,
-  getDoc,
-  deleteDoc,
 } from "firebase/firestore";
 import { handleFirestoreError, OperationType } from "../lib/firestoreUtils";
 import { error as loggerError } from "../lib/logger";
-import { generateChatResponse } from "../lib/ragUtils";
-import {
-  Mic,
-  LogOut,
-  History,
-  Settings,
-  Languages,
-  X,
-  Info,
-  Search,
-  BarChart,
-} from "lucide-react";
 import { useLanguage, languageNames } from "../contexts/LanguageContext";
 import { LanguageSwitch } from "./LanguageSwitch";
+import type { UserProfile, ApiProvider } from "../types";
+import type { Conversation } from "../types";
+
+// Type for conversation
+interface Conversation {
+  id: string;
+  summary?: string;
+  keyPoints?: string[];
+  speakers?: string[];
+  transcript?: string;
+  createdAt?: { toDate: () => Date };
+}
 
 interface DashboardProps {
   onStartInterpretation: () => void;
