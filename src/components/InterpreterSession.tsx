@@ -168,7 +168,7 @@ export function InterpreterSession({
         throw new Error("Microphone permission denied. Please allow microphone access to use the interpreter.");
       }
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
       playerRef.current = new AudioPlayer();
 
       const speed = parseInt(localStorage.getItem('translationSpeed') || '3');
@@ -334,7 +334,7 @@ export function InterpreterSession({
       // Use semantic cache wrapper for API call
       const { response: responseText, cached } = await generateChatResponseCached(
         prompt,
-        process.env.GEMINI_API_KEY || "",
+        import.meta.env.VITE_GEMINI_API_KEY || '',
         undefined,
         undefined,
         "json"

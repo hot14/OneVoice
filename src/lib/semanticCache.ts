@@ -1,15 +1,16 @@
 // Semantic Cache - 의미적으로 유사한 쿼리에 대한 API 응답 캐싱
 // EmbeddingGemma를 활용하여 시맨틱 유사도 기반 캐시 히트
 // Cosine similarity threshold: 0.92 (0.85-0.95 recommended)
+// Optimized for simultaneous interpretation: short TTL, larger capacity
 
 import { getCachedResponse, setCachedResponse, normalizePrompt } from './promptNormalizer';
 import { debug, warn } from './logger';
 import { getEmbedder } from './embeddingModel';
 
-// 시맨틱 캐시 설정
+// 시맨틱 캐시 설정 - 동시통역에 최적화 (단타高频)
 const SEMANTIC_THRESHOLD = 0.92;          // Cosine similarity threshold
-const MAX_SEMANTIC_CACHE_SIZE = 100;     // 캐시 크기 제한 (메모리 절약)
-const SEMANTIC_CACHE_TTL_MS = 60 * 60 * 1000; // 1시간 TTL
+const MAX_SEMANTIC_CACHE_SIZE = 200;      // Increased from 100 for more coverage
+const SEMANTIC_CACHE_TTL_MS = 15 * 60 * 1000; // 15분 TTL (동시통역에 적합)
 
 interface SemanticCacheItem {
   embedding: number[];

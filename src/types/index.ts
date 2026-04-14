@@ -56,6 +56,10 @@ export interface UserProfile {
   currentMaterial?: string;
   skills?: UserSkills;
   roadmap?: Roadmap;
+  // Admin flag
+  isAdmin?: boolean;
+  // Usage tracking
+  usageDuration?: number;
   // API configurations
   chatApiProvider?: ApiProvider;
   chatApiBaseUrl?: string;
@@ -70,6 +74,12 @@ export interface UserProfile {
   liveApiKey?: string;
   liveApiModel?: string;
   liveApiVoice?: string;
+  // Legacy/alternative field names for backward compatibility
+  apiProvider?: ApiProvider;
+  customApiBaseUrl?: string;
+  customApiKey?: string;
+  customApiModel?: string;
+  customApiEmbeddingModel?: string;
 }
 
 // ============= Transcript & Session =============

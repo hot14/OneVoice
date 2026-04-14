@@ -12,10 +12,18 @@ import {
 } from "firebase/firestore";
 import { handleFirestoreError, OperationType } from "../lib/firestoreUtils";
 import { error as loggerError } from "../lib/logger";
+import {
+  Mic,
+  History,
+  Settings,
+  X,
+  Info,
+  Search,
+  BarChart,
+} from "lucide-react";
 import { useLanguage, languageNames } from "../contexts/LanguageContext";
 import { LanguageSwitch } from "./LanguageSwitch";
 import type { UserProfile, ApiProvider } from "../types";
-import type { Conversation } from "../types";
 
 // Type for conversation
 interface Conversation {
@@ -25,6 +33,12 @@ interface Conversation {
   speakers?: string[];
   transcript?: string;
   createdAt?: { toDate: () => Date };
+  usageDuration?: number;
+  email?: string;
+  isAdmin?: boolean;
+  uid?: string;
+  displayName?: string;
+  photoURL?: string;
 }
 
 interface DashboardProps {
@@ -51,55 +65,37 @@ export function InterpretationDashboard({
 }: DashboardProps) {
   const { t, sourceLanguage, targetLanguage, setSourceLanguage, setTargetLanguage, uiLanguage, setUiLanguage } = useLanguage();
   const language = sourceLanguage;
-  const setLanguage = setSourceLanguage;
   const [showSettings, setShowSettings] = useState(false);
-  const [selectedConversation, setSelectedConversation] = useState<any | null>(null);
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
-  const [userProfile, setUserProfile] = useState<any>(null);
-  const [conversations, setConversations] = useState<any[]>([]);
-  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   // Security: Admin check using domain or custom claim (not hardcoded email)
-  // Production should use Firebase Custom Claims: admin.auth().setCustomUserClaims(uid, { admin: true })
   const isAdmin = auth.currentUser?.email?.endsWith("@gagatrack.com") || userProfile?.isAdmin === true;
 
-  useEffect(() => {
-    if (isAdmin) {
-      const usersRef = collection(db, "users");
-      const unsubscribeUsers = onSnapshot(usersRef, (snapshot) => {
-        const users: any[] = [];
-        snapshot.forEach((doc) => users.push({ id: doc.id, ...doc.data() }));
-        setAllUsers(users);
-      });
-      return () => unsubscribeUsers();
-    }
-  }, [isAdmin]);
-  
-  const filteredConversations = conversations.filter(conv => 
-    conv.summary?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    conv.keyPoints?.some((kp: string) => kp.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
-  
-  // API settings - defaults set to "embedgemma" for free on-device embeddings (mobile-optimized, 200MB RAM)
-  // Users can change these in settings
-  const [chatApiProvider, setChatApiProvider] = useState("openai");
+  // API settings state - consolidated
+  const [chatApiProvider, setChatApiProvider] = useState<ApiProvider>("openai");
   const [chatApiBaseUrl, setChatApiBaseUrl] = useState("");
   const [chatApiKey, setChatApiKey] = useState("");
   const [chatApiModel, setChatApiModel] = useState("");
 
-  const [embeddingApiProvider, setEmbeddingApiProvider] = useState("embedgemma");
+  const [embeddingApiProvider, setEmbeddingApiProvider] = useState<ApiProvider>("embedgemma");
   const [embeddingApiBaseUrl, setEmbeddingApiBaseUrl] = useState("");
   const [embeddingApiKey, setEmbeddingApiKey] = useState("");
   const [embeddingApiModel, setEmbeddingApiModel] = useState("");
 
-  const [liveApiProvider, setLiveApiProvider] = useState("gemini");
+  const [liveApiProvider, setLiveApiProvider] = useState<ApiProvider>("gemini");
   const [liveApiBaseUrl, setLiveApiBaseUrl] = useState("");
   const [liveApiKey, setLiveApiKey] = useState("");
   const [liveApiModel, setLiveApiModel] = useState("");
   const [liveApiVoice, setLiveApiVoice] = useState("");
 
-  // Security: API keys stored in localStorage only (not in Firestore for security)
-  // Read API keys from localStorage, fallback to user profile for migration
+  // Combined useEffect for data loading
   useEffect(() => {
+    if (!auth.currentUser) return;
+
+    // Load API keys from localStorage
     const storedChatApiKey = localStorage.getItem('api_key_chat');
     const storedEmbeddingApiKey = localStorage.getItem('api_key_embedding');
     const storedLiveApiKey = localStorage.getItem('api_key_live');
@@ -107,59 +103,42 @@ export function InterpretationDashboard({
     if (storedChatApiKey) setChatApiKey(storedChatApiKey);
     if (storedEmbeddingApiKey) setEmbeddingApiKey(storedEmbeddingApiKey);
     if (storedLiveApiKey) setLiveApiKey(storedLiveApiKey);
-  }, []);
-
-  useEffect(() => {
-    if (!auth.currentUser) return;
 
     const userRef = doc(db, "users", auth.currentUser.uid);
+    const convRef = collection(db, "users", auth.currentUser.uid, "conversations");
+    const qConv = query(convRef, orderBy("createdAt", "desc"), limit(5));
+
+    // User profile subscription
     const unsubscribeUser = onSnapshot(
       userRef,
       (docSnap) => {
         if (docSnap.exists()) {
-          const data = docSnap.data();
+          const data = docSnap.data() as UserProfile;
           setUserProfile(data);
 
-          // Only load non-sensitive settings from Firestore
-          setChatApiProvider(data.chatApiProvider || data.apiProvider || "gemini");
+          setChatApiProvider((data.chatApiProvider || data.apiProvider || "openai") as ApiProvider);
           setChatApiBaseUrl(data.chatApiBaseUrl || data.customApiBaseUrl || "");
-          // API keys are read from localStorage for security
-          setChatApiKey(localStorage.getItem('api_key_chat') || "");
           setChatApiModel(data.chatApiModel || data.customApiModel || "");
 
-          setEmbeddingApiProvider(data.embeddingApiProvider || data.apiProvider || "gemini");
+          setEmbeddingApiProvider((data.embeddingApiProvider || data.apiProvider || "embedgemma") as ApiProvider);
           setEmbeddingApiBaseUrl(data.embeddingApiBaseUrl || data.customApiBaseUrl || "");
-          // API keys are read from localStorage for security
-          setEmbeddingApiKey(localStorage.getItem('api_key_embedding') || "");
           setEmbeddingApiModel(data.embeddingApiModel || data.customApiEmbeddingModel || "");
 
-          setLiveApiProvider(data.liveApiProvider || "gemini");
+          setLiveApiProvider((data.liveApiProvider || "gemini") as ApiProvider);
           setLiveApiBaseUrl(data.liveApiBaseUrl || "");
-          // API keys are read from localStorage for security
-          setLiveApiKey(localStorage.getItem('api_key_live') || "");
           setLiveApiModel(data.liveApiModel || "");
           setLiveApiVoice(data.liveApiVoice || "");
 
-          // Migration: Ensure basic fields exist
-          if (
-            !data.uid ||
-            !data.displayName ||
-            !data.email
-          ) {
-            setDoc(
-              userRef,
-              {
-                uid: data.uid || auth.currentUser.uid,
-                displayName: data.displayName || auth.currentUser.displayName || 'Learner',
-                email: data.email || auth.currentUser.email || '',
-                photoURL: data.photoURL || auth.currentUser.photoURL || '',
-                updatedAt: serverTimestamp(),
-              },
-              { merge: true },
-            ).catch((err) => loggerError("Migration failed:", err?.message));
+          if (!data.uid || !data.displayName || !data.email) {
+            setDoc(userRef, {
+              uid: data.uid || auth.currentUser.uid,
+              displayName: data.displayName || auth.currentUser.displayName || 'Learner',
+              email: data.email || auth.currentUser.email || '',
+              photoURL: data.photoURL || auth.currentUser.photoURL || '',
+              updatedAt: serverTimestamp(),
+            }, { merge: true }).catch((err) => loggerError("Migration failed:", err?.message));
           }
         } else {
-          // Initialize new user profile
           setDoc(userRef, {
             uid: auth.currentUser.uid,
             displayName: auth.currentUser.displayName || 'Learner',
@@ -169,40 +148,46 @@ export function InterpretationDashboard({
           }, { merge: true }).catch((err) => loggerError("Initialization failed:", err?.message));
         }
       },
-      (err) => {
-        handleFirestoreError(
-          err,
-          OperationType.GET,
-          `users/${auth.currentUser?.uid}`,
-        );
-      },
+      (err) => handleFirestoreError(err, OperationType.GET, `users/${auth.currentUser?.uid}`)
     );
 
-    const convRef = collection(db, "users", auth.currentUser.uid, "conversations");
-    const qConv = query(convRef, orderBy("createdAt", "desc"), limit(5));
+    // Conversations subscription
     const unsubscribeConv = onSnapshot(
       qConv,
       (snapshot) => {
-        const convs: any[] = [];
-        snapshot.forEach((doc) => convs.push({ id: doc.id, ...doc.data() }));
+        const convs: Conversation[] = [];
+        snapshot.forEach((d) => convs.push({ id: d.id, ...d.data() as Conversation }));
         setConversations(convs);
       },
-      (err) => {
-        handleFirestoreError(
-          err,
-          OperationType.LIST,
-          `users/${auth.currentUser?.uid}/conversations`,
-        );
-      },
+      (err) => handleFirestoreError(err, OperationType.LIST, `users/${auth.currentUser?.uid}/conversations`)
     );
+
+    // Admin users subscription
+    let unsubscribeUsers: (() => void) | undefined;
+    if (isAdmin) {
+      const usersRef = collection(db, "users");
+      unsubscribeUsers = onSnapshot(usersRef, (snapshot) => {
+        const users: UserProfile[] = [];
+        snapshot.forEach((d) => users.push(d.data() as UserProfile));
+        setAllUsers(users);
+      });
+    }
 
     return () => {
       unsubscribeUser();
       unsubscribeConv();
+      unsubscribeUsers?.();
     };
-  }, []);
+  }, [isAdmin]);
 
-
+  // Memoized filtered conversations for performance
+  const filteredConversations = useMemo(() => 
+    conversations.filter(conv => 
+      conv.summary?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      conv.keyPoints?.some((kp: string) => kp.toLowerCase().includes(searchTerm.toLowerCase()))
+    ),
+    [conversations, searchTerm]
+  );
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -324,7 +309,7 @@ export function InterpretationDashboard({
             <h3 className="text-lg font-bold text-gray-900 mb-4">Admin: User Management</h3>
             <div className="space-y-2">
               {allUsers.map(user => (
-                <div key={user.id} className="flex justify-between p-3 bg-gray-50 rounded-lg text-sm">
+                <div key={user.uid || user.email} className="flex justify-between p-3 bg-gray-50 rounded-lg text-sm">
                   <span>{user.email}</span>
                   <span className="font-mono">{Math.round(user.usageDuration || 0)}s</span>
                 </div>
@@ -472,7 +457,7 @@ export function InterpretationDashboard({
                       </label>
                       <select
                         value={chatApiProvider}
-                        onChange={(e) => setChatApiProvider(e.target.value)}
+                        onChange={(e) => setChatApiProvider(e.target.value as ApiProvider)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm"
                       >
                         <option value="gemini">Google Gemini (Default)</option>
@@ -527,7 +512,7 @@ export function InterpretationDashboard({
                       </label>
                       <select
                         value={embeddingApiProvider}
-                        onChange={(e) => setEmbeddingApiProvider(e.target.value)}
+                        onChange={(e) => setEmbeddingApiProvider(e.target.value as ApiProvider)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm"
                       >
                         <option value="gemini">Google Gemini (Default)</option>
@@ -582,7 +567,7 @@ export function InterpretationDashboard({
                       </label>
                       <select
                         value={liveApiProvider}
-                        onChange={(e) => setLiveApiProvider(e.target.value)}
+                        onChange={(e) => setLiveApiProvider(e.target.value as ApiProvider)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm"
                       >
                         <option value="gemini">Google Gemini Live (Default)</option>

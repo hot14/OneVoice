@@ -57,7 +57,8 @@ export async function generateEmbeddings(texts: string[], apiKey: string, embedd
   const embeddings: number[][] = [];
 
   // Process in smaller batches to avoid rate limits
-  const concurrency = isCustom ? 5 : 3;
+  // Reduced concurrency to minimize API rate limiting
+  const concurrency = isCustom ? 3 : 2;
   for (let i = 0; i < texts.length; i += concurrency) {
     const batch = texts.slice(i, i + concurrency);
     const promises = batch.map(async (text) => {
