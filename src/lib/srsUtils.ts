@@ -33,10 +33,10 @@ export function calculateNextReview(
       nextInterval = Math.round(currentInterval * currentEaseFactor);
     }
     nextRepetitions = currentRepetitions + 1;
-    // Update ease factor: EF' = EF + (0.1 - (3 - quality) * (0.08 + (3 - quality) * 0.02))
-    // We adjust the quality scale from 0-3 to SM-2's 0-5 scale if needed, 
-    // but here we use a simplified adjustment.
-    nextEaseFactor = currentEaseFactor + (0.1 - (3 - quality) * 0.1);
+    // SM-2 ease factor adjustment:
+    // - For quality 2 (good): EF' = EF + 0 (no change)
+    // - For quality 3 (easy): EF' = EF + 0.1 (increase)
+    nextEaseFactor = currentEaseFactor + (quality === 3 ? 0.1 : 0);
   } else { // Incorrect response
     nextRepetitions = 0;
     nextInterval = 1;

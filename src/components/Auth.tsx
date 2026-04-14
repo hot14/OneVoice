@@ -4,6 +4,7 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '../lib/firestoreUtils';
 import { useLanguage } from '../contexts/LanguageContext';
 import { LanguageSwitch } from './LanguageSwitch';
+import { error as loggerError } from '../lib/logger';
 
 export function Auth() {
   const { t } = useLanguage();
@@ -58,7 +59,7 @@ export function Auth() {
       if (error.code === 'auth/cancelled-popup-request') {
         console.log('Login popup was closed by the user.');
       } else {
-        console.error('Login failed:', error);
+        loggerError('Login failed:', error?.message);
         alert(t('auth.loginFailed'));
       }
     }

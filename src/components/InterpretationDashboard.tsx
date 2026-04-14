@@ -15,6 +15,7 @@ import {
   deleteDoc,
 } from "firebase/firestore";
 import { handleFirestoreError, OperationType } from "../lib/firestoreUtils";
+import { error as loggerError } from "../lib/logger";
 import { generateChatResponse } from "../lib/ragUtils";
 import {
   Mic,
@@ -159,7 +160,7 @@ export function InterpretationDashboard({
                 updatedAt: serverTimestamp(),
               },
               { merge: true },
-            ).catch((err) => console.error("Migration failed:", err));
+            ).catch((err) => loggerError("Migration failed:", err?.message));
           }
         } else {
           // Initialize new user profile
@@ -169,7 +170,7 @@ export function InterpretationDashboard({
             email: auth.currentUser.email || '',
             photoURL: auth.currentUser.photoURL || '',
             createdAt: serverTimestamp(),
-          }, { merge: true }).catch((err) => console.error("Initialization failed:", err));
+          }, { merge: true }).catch((err) => loggerError("Initialization failed:", err?.message));
         }
       },
       (err) => {
@@ -250,7 +251,6 @@ export function InterpretationDashboard({
       );
       setShowSettings(false);
     } catch (err) {
-      console.error("Save settings error:", err);
       handleFirestoreError(
         err,
         OperationType.WRITE,
