@@ -99,6 +99,11 @@ export class AudioRecorder {
       };
 
       this.source.connect(this.workletNode);
+      // Connect to destination via silent gain to keep audio graph active
+      const silentGain = audioContext.createGain();
+      silentGain.gain.value = 0;
+      this.workletNode.connect(silentGain);
+      silentGain.connect(audioContext.destination);
     } catch (err) {
       // Cleanup on error
       this.cleanup();

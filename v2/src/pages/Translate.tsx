@@ -76,6 +76,7 @@ export default function Translate() {
   const lastPanRef = useRef<number>(0);
   const activeTurnBufferRef = useRef<string>("");
   const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
   const MAX_RECONNECT = 3;
 
   const [script, setScript] = useState<ScriptLine[]>([]);
@@ -253,10 +254,19 @@ export default function Translate() {
           },
           onerror: (err) => {
             console.error("Live session error:", err);
+            // Clean up failed session resources before retrying
+            try { recorderRef.current?.stop(); } catch {}
+            recorderRef.current = null;
+            try { sessionRef.current?.close(); } catch {}
+            sessionRef.current = null;
+
             if (reconnectAttemptsRef.current < MAX_RECONNECT) {
               reconnectAttemptsRef.current += 1;
-              const delay = reconnectAttemptsRef.current * 2000;
-              setTimeout(() => startSession(), delay);
+              const delay = Math.pow(2, reconnectAttemptsRef.current - 1) * 1000;
+              reconnectTimerRef.current = window.setTimeout(() => {
+                reconnectTimerRef.current = null;
+                startSession();
+              }, delay);
             } else {
               reconnectAttemptsRef.current = 0;
               setError(`연결 오류: ${MAX_RECONNECT}회 재시도 후 실패했습니다.`);
@@ -285,14 +295,23 @@ export default function Translate() {
 
   const stopSession = () => {
     reconnectAttemptsRef.current = 0;
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     setIsRecording(false);
     setIsConnecting(false);
-    
+
     if (recorderRef.current) {
       recorderRef.current.stop();
       recorderRef.current = null;
     }
-    
+
+    if (playerRef.current) {
+      playerRef.current.stop();
+      playerRef.current = null;
+    }
+
     if (sessionRef.current) {
       try {
         sessionRef.current.close();

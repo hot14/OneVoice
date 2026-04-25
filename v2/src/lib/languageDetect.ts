@@ -1,6 +1,6 @@
 const LANGUAGE_PATTERNS: Record<string, RegExp> = {
   ko: /[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]/,
-  jp: /[\u3040-\u309F\u30A0-\u30FF]/,
+  jp: /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/,
   cn: /[\u4E00-\u9FFF\u3400-\u4DBF]/,
   ar: /[\u0600-\u06FF]/,
   fr: /[àâäéèêëîïôùûüÿæœçÀÂÄÉÈÊËÎÏÔÙÛÜŸÆŒÇ]/,

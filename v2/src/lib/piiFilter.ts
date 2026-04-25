@@ -18,13 +18,13 @@ export function maskPII(text: string): string {
     return `${user[0]}***@${domain}`;
   });
 
+  // Mask Korean SSN before phone (SSN pattern \d{6}-\d{7} would match phone regex)
+  masked = masked.replace(SSN_REGEX, '******-*******');
+
   // Mask Phone Numbers
   masked = masked.replace(PHONE_REGEX, (match) => {
     return match.replace(/\d/g, '*').slice(0, -4) + match.slice(-4);
   });
-
-  // Mask Korean SSN
-  masked = masked.replace(SSN_REGEX, '******-*******');
 
   return masked;
 }

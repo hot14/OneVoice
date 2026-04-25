@@ -19,21 +19,28 @@ declare global {
 }
 
 export function useSpeech(
-  language: string, 
+  language: string,
   onTranscriptComplete: (transcript: string) => void
 ) {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const recognitionRef = useRef<any>(null);
+  const onCompleteRef = useRef(onTranscriptComplete);
 
-  // Initialize Speech Recognition
+  useEffect(() => {
+    onCompleteRef.current = onTranscriptComplete;
+  }, [onTranscriptComplete]);
+
+  // Initialize Speech Recognition once
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
+      const localeMap: Record<string, string> = { en: 'en-US', ko: 'ko-KR', ja: 'ja-JP' };
       recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false; // Stop after a pause
-      recognitionRef.current.interimResults = true; // Show interim results
-      
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.lang = localeMap[language] || language;
+
       recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
         let interimTranscript = '';
         let finalTranscript = '';
@@ -45,14 +52,12 @@ export function useSpeech(
             interimTranscript += event.results[i][0].transcript;
           }
         }
-        
-        // Show interim immediately, but only use final for completion
+
         const displayTranscript = finalTranscript || interimTranscript;
         setTranscript(displayTranscript);
 
-        // If we have a final transcript, stop and trigger callback
         if (finalTranscript) {
-          onTranscriptComplete(finalTranscript.trim());
+          onCompleteRef.current(finalTranscript.trim());
           setIsListening(false);
         }
       };
@@ -68,13 +73,14 @@ export function useSpeech(
     } else {
       console.warn("Speech Recognition API is not supported in this browser.");
     }
-    
+
     return () => {
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
     };
-  }, [onTranscriptComplete]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Handle language changes
   useEffect(() => {

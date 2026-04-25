@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, HelpCircle, Volume2, SplitSquareHorizontal, Smartphone, ChevronRight, LogOut, User as UserIcon, MonitorSmartphone, Languages, Info, ExternalLink, X, Check } from 'lucide-react';
 import { PretextWrap } from '../components/PretextWrap';
@@ -16,7 +16,7 @@ export default function Settings() {
   const renderModal = () => {
     if (!activeModal) return null;
 
-    const modalConfig: Record<string, { title: string, content: React.ReactNode }> = {
+    const modalConfig: Record<string, { title: string; content: ReactNode }> = {
       voice: {
         title: '음성 출력 설정',
         content: (
