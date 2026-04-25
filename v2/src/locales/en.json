@@ -1,0 +1,16 @@
+{
+  "translationPage": {
+    "title": "Face-to-Face Translation",
+    "description": "Speak freely. I will translate it.",
+    "selectLanguage": "Select Language",
+    "startTranslating": "Start Translating"
+  },
+  "homePage": {
+    "faceToFace": "Simultaneous Interpretation",
+    "home": "Dashboard",
+    "culturalGuide": "Knowledge Guide",
+    "history": "History",
+    "deviceConnect": "Device Connect",
+    "settings": "Settings"
+  }
+}

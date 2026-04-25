@@ -1,0 +1,16 @@
+{
+  "translationPage": {
+    "title": "대면 통역",
+    "description": "자유롭게 말씀하세요. 통역해 드릴게요.",
+    "selectLanguage": "언어 선택",
+    "startTranslating": "통역 시작"
+  },
+  "homePage": {
+    "faceToFace": "통역",
+    "home": "대시보드",
+    "culturalGuide": "지식 가이드",
+    "history": "통역 기록",
+    "deviceConnect": "기기 연결",
+    "settings": "설정"
+  }
+}
