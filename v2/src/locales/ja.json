@@ -1,0 +1,16 @@
+{
+  "translationPage": {
+    "title": "対面翻訳",
+    "description": "自由にお話しください。私が翻訳します。",
+    "selectLanguage": "言語の選択",
+    "startTranslating": "翻訳開始"
+  },
+  "homePage": {
+    "faceToFace": "対面翻訳",
+    "home": "ダッシュボード",
+    "culturalGuide": "知識ガイド",
+    "history": "翻訳履歴",
+    "deviceConnect": "デバイス接続",
+    "settings": "設定"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "OneVoice",
+  "description": "AI-powered real-time translation and cultural guide app.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
