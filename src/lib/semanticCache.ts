@@ -1,182 +1,114 @@
-// Semantic Cache - 의미적으로 유사한 쿼리에 대한 API 응답 캐싱
-// EmbeddingGemma를 활용하여 시맨틱 유사도 기반 캐시 히트
-// Cosine similarity threshold: 0.92 (0.85-0.95 recommended)
-// Optimized for simultaneous interpretation: short TTL, larger capacity
+import { normalizePrompt } from "./promptNormalizer";
 
-import { getCachedResponse, setCachedResponse, normalizePrompt } from './promptNormalizer';
-import { debug, warn } from './logger';
-import { getEmbedder } from './embeddingModel';
-
-// 시맨틱 캐시 설정 - 동시통역에 최적화 (단타高频)
-const SEMANTIC_THRESHOLD = 0.92;          // Cosine similarity threshold
-const MAX_SEMANTIC_CACHE_SIZE = 200;      // Increased from 100 for more coverage
-const SEMANTIC_CACHE_TTL_MS = 15 * 60 * 1000; // 15분 TTL (동시통역에 적합)
-
-interface SemanticCacheItem {
-  embedding: number[];
-  response: string;
-  prompt: string;
+interface CacheEntry<T> {
+  data: T;
   timestamp: number;
+  expiresAt: number;
 }
 
-// 시맨틱 캐시 저장소 (LRU eviction)
-const semanticCache: SemanticCacheItem[] = [];
-
 /**
- * Cosine similarity 계산
+ * SemanticCache provides a mechanism to store and retrieve AI responses
+ * based on prompt similarity.
+ * 
+ * Currently implements Normalized Exact Match. 
+ * Phase 2 will add Vector-based Semantic Similarity.
  */
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
+export class SemanticCache {
+  private cache: Map<string, CacheEntry<any>> = new Map();
+  private readonly DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+  constructor(private prefix: string = "onevoice_cache") {
+    this.loadFromLocalStorage();
   }
 
-  if (normA === 0 || normB === 0) return 0;
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
+  private loadFromLocalStorage() {
+    try {
+      const keys = Object.keys(localStorage);
+      for (const key of keys) {
+        if (key.startsWith(this.prefix)) {
+          const entry = JSON.parse(localStorage.getItem(key) || "");
+          if (entry && entry.expiresAt > Date.now()) {
+            const promptKey = key.replace(`${this.prefix}_`, "");
+            this.cache.set(promptKey, entry);
+          } else {
+            localStorage.removeItem(key);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load cache from localStorage", e);
+    }
+  }
 
-/**
- * 프롬프트의 임베딩 벡터를 생성
- */
-async function getPromptEmbedding(prompt: string): Promise<number[] | null> {
-  const model = await getEmbedder();
-  if (!model) return null;
+  private saveToLocalStorage(key: string, entry: CacheEntry<any>) {
+    try {
+      localStorage.setItem(`${this.prefix}_${key}`, JSON.stringify(entry));
+    } catch (e) {
+      // If quota exceeded, clear old entries
+      if (e instanceof Error && e.name === 'QuotaExceededError') {
+        this.clearOldEntries();
+      }
+    }
+  }
 
-  try {
-    const normalizedPrompt = normalizePrompt(prompt);
-    const result = await (model as any)(normalizedPrompt, { pooling: 'mean', normalize: true });
-    return Array.from(result.data as unknown as number[]);
-  } catch (error) {
-    warn("Failed to generate embedding for semantic cache:", error);
+  private clearOldEntries() {
+    const entries = Array.from(this.cache.entries());
+    entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+    // Remove oldest 20%
+    const toRemove = Math.ceil(entries.length * 0.2);
+    for (let i = 0; i < toRemove; i++) {
+      const [key] = entries[i];
+      this.cache.delete(key);
+      localStorage.removeItem(`${this.prefix}_${key}`);
+    }
+  }
+
+  /**
+   * Get a cached response for a prompt
+   */
+  get<T>(prompt: string): T | null {
+    const key = normalizePrompt(prompt);
+    const entry = this.cache.get(key);
+
+    if (entry) {
+      if (entry.expiresAt > Date.now()) {
+        return entry.data as T;
+      } else {
+        this.cache.delete(key);
+        localStorage.removeItem(`${this.prefix}_${key}`);
+      }
+    }
     return null;
   }
-}
 
-/**
- * 시맨틱 캐시에서 유사한 응답 검색
- */
-async function findSimilarResponse(
-  prompt: string
-): Promise<{ response: string; similarity: number } | null> {
-  const promptEmbedding = await getPromptEmbedding(prompt);
-  if (!promptEmbedding) return null;
+  /**
+   * Set a response in the cache
+   */
+  set<T>(prompt: string, data: T, ttl: number = this.DEFAULT_TTL) {
+    const key = normalizePrompt(prompt);
+    const entry: CacheEntry<T> = {
+      data,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + ttl
+    };
 
-  const now = Date.now();
+    this.cache.set(key, entry);
+    this.saveToLocalStorage(key, entry);
+  }
 
-  // 캐시에서 유사한 항목 검색
-  for (let i = semanticCache.length - 1; i >= 0; i--) {
-    const item = semanticCache[i];
-
-    // TTL 만료된 항목 제거
-    if (now - item.timestamp > SEMANTIC_CACHE_TTL_MS) {
-      semanticCache.splice(i, 1);
-      continue;
-    }
-
-    const similarity = cosineSimilarity(promptEmbedding, item.embedding);
-
-    if (similarity >= SEMANTIC_THRESHOLD) {
-      debug(`Semantic cache hit: ${similarity.toFixed(3)} similarity`);
-      // 사용된 항목을 최신으로 이동
-      item.timestamp = now;
-      semanticCache.splice(i, 1);
-      semanticCache.push(item);
-      return { response: item.response, similarity };
+  /**
+   * Clear the entire cache
+   */
+  clear() {
+    this.cache.clear();
+    const keys = Object.keys(localStorage);
+    for (const key of keys) {
+      if (key.startsWith(this.prefix)) {
+        localStorage.removeItem(key);
+      }
     }
   }
-
-  return null;
 }
 
-/**
- * 시맨틱 캐시에 응답 저장
- */
-async function storeInSemanticCache(prompt: string, response: string): Promise<void> {
-  const promptEmbedding = await getPromptEmbedding(prompt);
-  if (!promptEmbedding) return;
-
-  // 캐시 크기 제한
-  if (semanticCache.length >= MAX_SEMANTIC_CACHE_SIZE) {
-    semanticCache.shift(); // 가장 오래된 항목 제거
-  }
-
-  semanticCache.push({
-    embedding: promptEmbedding,
-    response,
-    prompt: normalizePrompt(prompt),
-    timestamp: Date.now(),
-  });
-}
-
-/**
- * 시맨틱 캐시를 활용한 API 호출 래퍼
- * @param prompt 원본 프롬프트
- * @param apiCall 실제 API 호출 함수
- * @returns { response: string, cached: boolean }
- */
-export async function getSemanticCachedResponse(
-  prompt: string,
-  apiCall: () => Promise<string>
-): Promise<{ response: string; cached: boolean }> {
-  const normalizedPrompt = normalizePrompt(prompt);
-
-  // 1단계: 정확 일치 캐시 확인
-  const exactCachedResponse = getCachedResponse(normalizedPrompt);
-  if (exactCachedResponse) {
-    debug("Exact cache hit");
-    return { response: exactCachedResponse, cached: true };
-  }
-
-  // 2단계: 시맨틱 캐시 확인
-  try {
-    const semanticMatch = await findSimilarResponse(prompt);
-    if (semanticMatch) {
-      // 정확 캐시에도 저장 (향후 정확 일치 히트율 향상)
-      setCachedResponse(normalizedPrompt, semanticMatch.response);
-      return { response: semanticMatch.response, cached: true };
-    }
-  } catch (error) {
-    warn("Semantic cache lookup failed:", error);
-  }
-
-  // 3단계: Fresh API call
-  const freshResponse = await apiCall();
-
-  // 두 캐시에 모두 저장
-  setCachedResponse(normalizedPrompt, freshResponse);
-
-  try {
-    await storeInSemanticCache(prompt, freshResponse);
-  } catch (error) {
-    warn("Failed to store in semantic cache:", error);
-  }
-
-  return { response: freshResponse, cached: false };
-}
-
-/**
- * 시맨틱 캐시 통계 (디버깅용)
- */
-export function getSemanticCacheStats(): {
-  size: number;
-  threshold: number;
-  ttlMinutes: number;
-} {
-  return {
-    size: semanticCache.length,
-    threshold: SEMANTIC_THRESHOLD,
-    ttlMinutes: SEMANTIC_CACHE_TTL_MS / 60000,
-  };
-}
-
-/**
- * 모든 시맨틱 캐시 초기화 (테스트용)
- */
-export function clearSemanticCache(): void {
-  semanticCache.length = 0;
-}
+// Singleton instance
+export const semanticCache = new SemanticCache();

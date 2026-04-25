@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { GoogleGenAI, Modality, LiveServerMessage, Type } from "@google/genai";
 import { Mic, MicOff, X, Volume2, Loader2 } from "lucide-react";
 import { AudioRecorder, AudioPlayer } from "../lib/audioUtils";
+import { getMicErrorDetails, MicErrorDetails } from "../lib/micUtils";
 import { useLanguage } from "../contexts/LanguageContext";
 import { auth, db } from "../firebase";
 import {
@@ -99,16 +100,32 @@ interface TutorSessionProps {
   topic?: string;
 }
 
+const getLanguageName = (code: string) => {
+  const names: Record<string, string> = {
+    en: 'English', ko: 'Korean', es: 'Spanish', fr: 'French', de: 'German',
+    ja: 'Japanese', 'zh-CN': 'Chinese (Simplified)', 'zh-HK': 'Chinese (Hong Kong)',
+    'zh-TW': 'Chinese (Taiwan)', it: 'Italian', pt: 'Portuguese', ru: 'Russian',
+    ar: 'Arabic', vi: 'Vietnamese', th: 'Thai', lo: 'Lao', km: 'Khmer',
+    my: 'Burmese', id: 'Indonesian', ms: 'Malay', fil: 'Filipino',
+    kk: 'Kazakh', uz: 'Uzbek', mn: 'Mongolian', nl: 'Dutch', pl: 'Polish',
+    sv: 'Swedish', no: 'Norwegian', da: 'Danish', fi: 'Finnish',
+    el: 'Greek', tr: 'Turkish', cs: 'Czech', hu: 'Hungarian', ro: 'Romanian'
+  };
+  return names[code] || code;
+};
+
 export function TutorSession({
   onClose,
   onLessonComplete,
   topic,
 }: TutorSessionProps) {
-  const { t, sourceLanguage } = useLanguage();
+  const { t, sourceLanguage, targetLanguage } = useLanguage();
   const language = sourceLanguage;
+
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [micError, setMicError] = useState<MicErrorDetails | null>(null);
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const transcriptRef = useRef<TranscriptMessage[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -161,15 +178,14 @@ export function TutorSession({
     try {
       setIsConnecting(true);
       setError(null);
+      setMicError(null);
       setSessionStartTime(Date.now());
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       playerRef.current = new AudioPlayer();
 
-      const userLang =
-        (userProfile?.nativeLanguage || language) === "ko"
-          ? "Korean"
-          : "English";
+      const userLang = getLanguageName(sourceLanguage);
+      const targetLang = getLanguageName(targetLanguage);
       const userLevel = userProfile?.level || 1;
       const userGoals = userProfile?.learningGoals || "None specified";
       let currentMaterial = "None provided";
@@ -191,9 +207,9 @@ export function TutorSession({
         ? `\nTODAY'S SPECIFIC LESSON TOPIC: "${topic}"\nYou MUST focus the entire lesson primarily on this topic.`
         : "";
 
-      const systemInstruction = `You are 'English Tutor', a native English speaker from New York City. You are teaching English to a student who speaks ${userLang}.
+      const systemInstruction = `You are '${targetLang} Tutor', a native ${targetLang} speaker. You are teaching ${targetLang} to a student who speaks ${userLang}.
 You have studied ${userLang} extensively and speak it very well, so you will use ${userLang} to explain concepts, grammar, and meanings.
-The user's current English level is ${userLevel}.
+The user's current ${targetLang} level is ${userLevel}.
 User's specific learning goals/requests: "${userGoals}".
 User's provided study material:
 """
@@ -201,16 +217,16 @@ ${currentMaterial}
 """${specificTopic}
 
 CRITICAL PERSONA AND PRONUNCIATION RULE (STRICTLY ENFORCED):
-1. You are a native English speaker from New York City. You speak with a natural, confident New York accent, perfect intonation, and natural English rhythm.
-2. When you speak ${userLang}, you speak it as a fluent foreigner. It is completely fine and expected if your ${userLang} sounds like a New Yorker speaking it, but your English MUST sound 100% native New Yorker.
-3. NEVER use ${userLang} pronunciation habits when speaking English.
+1. You are a native ${targetLang} speaker. You speak with a natural, confident accent, perfect intonation, and natural ${targetLang} rhythm.
+2. When you speak ${userLang}, you speak it as a fluent foreigner. It is completely fine and expected if your ${userLang} sounds like a native ${targetLang} speaker speaking it, but your ${targetLang} MUST sound 100% native.
+3. NEVER use ${userLang} pronunciation habits when speaking ${targetLang}.
 
 REAL-TIME PRONUNCIATION COACHING (MANDATORY):
-- You MUST listen to the user's spoken English in real-time.
+- You MUST listen to the user's spoken ${targetLang} in real-time.
 - Provide IMMEDIATE and SPECIFIC feedback on their pronunciation.
 - Focus on:
-  a) INTONATION: Correct the overall sentence melody, incorporating New York rhythm.
-  b) SOUNDS: English has specific phonemes. Correct specific sounds, especially those difficult for ${userLang} speakers.
+  a) INTONATION: Correct the overall sentence melody, incorporating native ${targetLang} rhythm.
+  b) SOUNDS: ${targetLang} has specific phonemes. Correct specific sounds, especially those difficult for ${userLang} speakers.
 - Use ${userLang} to explain how to position the tongue or mouth to achieve the correct sound.
 - Be proactive. If you hear a mistake, INTERRUPT gently and ask them to repeat it correctly.
 
@@ -219,9 +235,9 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
 - If the user provided study material, you MUST use it as the basis for the lesson. Read it, explain it, and practice it with the user.
 - If no material is provided, start with basic greetings, common phrases, basic grammar, or simple verbs for beginners.
 - Remember their specific learning goals and incorporate them into the lesson.
-- Start the session by warmly greeting the user in English and ${userLang}, briefly stating what you will teach today, and immediately starting the first exercise.
+- Start the session by warmly greeting the user in ${targetLang} and ${userLang}, briefly stating what you will teach today, and immediately starting the first exercise.
 - Listen to their pronunciation carefully. Provide gentle, constructive feedback in ${userLang}.
-- If their pronunciation is wrong, correct them by repeating the word clearly in English with exaggerated, clear native New Yorker sounds.
+- If their pronunciation is wrong, correct them by repeating the word clearly in ${targetLang} with exaggerated, clear native sounds.
 - Explicitly point out grammar rules and pronunciation nuances when correcting, especially focusing on L1 interference from ${userLang}.`;
 
       const liveApiProvider = userProfile?.liveApiProvider || "gemini";
@@ -230,18 +246,26 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
         const sessionPromise = ai.live.connect({
           model: "gemini-3.1-flash-live-preview",
           callbacks: {
-            onopen: () => {
+            onopen: async () => {
               setIsConnecting(false);
               setIsRecording(true);
 
-              recorderRef.current = new AudioRecorder((base64Data) => {
-                sessionPromise.then((session) => {
-                  session.sendRealtimeInput({
-                    audio: { data: base64Data, mimeType: "audio/pcm;rate=16000" },
+              try {
+                recorderRef.current = new AudioRecorder((base64Data) => {
+                  sessionPromise.then((session) => {
+                    session.sendRealtimeInput({
+                      audio: { data: base64Data, mimeType: "audio/pcm;rate=16000" },
+                    });
                   });
                 });
-              });
-              recorderRef.current.start();
+                await recorderRef.current.start();
+              } catch (err: any) {
+                console.error("Error starting audio recorder:", err);
+                const details = getMicErrorDetails(err);
+                setMicError(details);
+                setError(details.message);
+                stopSession();
+              }
             },
             onmessage: async (message: LiveServerMessage) => {
               const base64Audio =
@@ -483,7 +507,7 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
         }
         
         const recognition = new SpeechRecognition();
-        recognition.lang = "th-TH";
+        recognition.lang = targetLanguage;
         recognition.continuous = false;
         recognition.interimResults = false;
 
@@ -538,7 +562,7 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
             });
 
             const utterance = new SpeechSynthesisUtterance(tutorText);
-            utterance.lang = "th-TH";
+            utterance.lang = targetLanguage;
             utterance.onend = () => {
               if (isSessionActive) recognition.start();
             };
@@ -562,7 +586,7 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
           return newTranscript;
         });
         const utterance = new SpeechSynthesisUtterance(initialGreeting);
-        utterance.lang = "th-TH";
+        utterance.lang = targetLanguage;
         utterance.onend = () => {
           if (isSessionActive) recognition.start();
         };
@@ -571,9 +595,11 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
         setIsConnecting(false);
         setIsRecording(true);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to start session:", err);
-      setError("Failed to start the tutor session.");
+      const details = getMicErrorDetails(err);
+      setMicError(details);
+      setError(details.message);
       setIsConnecting(false);
     }
   };
@@ -629,10 +655,8 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
       );
       const userRef = doc(db, "users", auth.currentUser.uid);
 
-      const userLang =
-        (userProfile?.nativeLanguage || language) === "ko"
-          ? "Korean (한국어)"
-          : "English";
+      const userLang = getLanguageName(sourceLanguage);
+      const targetLang = getLanguageName(targetLanguage);
 
       // Generate summary and feedback using configured Chat API
       const chatApiSettings = {
@@ -643,14 +667,14 @@ Do NOT passively ask "What do you want to learn today?". Instead, LEAD the lesso
       };
       const apiKey = process.env.GEMINI_API_KEY || "";
       
-      const prompt = `Analyze the following transcript of an English language tutoring session.
+      const prompt = `Analyze the following transcript of a ${targetLang} language tutoring session.
 
 CRITICAL LANGUAGE INSTRUCTION:
 The user's preferred language is ${userLang}. 
 You MUST write the content for "topic", "summary", "feedback", "learningTips", "levelReasoning", and the "meaning" of expressions ENTIRELY in ${userLang}. 
 If ${userLang} is Korean, your output must be in natural-sounding Korean. Do NOT output these fields in English.
 
-You must also evaluate the user's overall English proficiency level based on this session, using the following 1-10 scale:
+You must also evaluate the user's overall ${targetLang} proficiency level based on this session, using the following 1-10 scale:
 1: Absolute Beginner (Greetings, basic words)
 2: Beginner (Simple sentences, survival English)
 3: Upper Beginner (Short daily conversations)
@@ -668,7 +692,7 @@ Provide a JSON response with the following keys:
 - "feedback": Constructive feedback for the student (MUST be in ${userLang}).
 - "learningTips": Actionable tips for the user to improve based on this session (MUST be in ${userLang}).
 - "expGained": An object with 4 keys: "vocabulary", "grammar", "pronunciation", "listening". Assign an EXP (Experience Points) value from 10 to 50 for each skill based on their effort and performance in this session.
-- "acquiredExpressions": An array of objects representing 5-10 key Thai expressions, words, or example sentences the user successfully practiced, learned, or should review today. Each object should have "thai" (the Thai word/phrase), "meaning" (the meaning, MUST be in ${userLang}), "exampleSentence" (a helpful example sentence in Thai), and "exampleMeaning" (the meaning of the example sentence in ${userLang}).
+- "acquiredExpressions": An array of objects representing 5-10 key ${targetLang} expressions, words, or example sentences the user successfully practiced, learned, or should review today. Each object should have "word" (the ${targetLang} word/phrase), "meaning" (the meaning, MUST be in ${userLang}), "exampleSentence" (a helpful example sentence in ${targetLang}), and "exampleMeaning" (the meaning of the example sentence in ${userLang}).
 - "diagnosedLevel": A number from 1 to 10 representing their current level based on the rubric above.
 - "levelReasoning": A brief explanation of why you assigned this level (MUST be in ${userLang}).
 
@@ -734,7 +758,7 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
       // Save acquired expressions to vocabulary
       if (acquiredExpressions && acquiredExpressions.length > 0) {
         for (const expr of acquiredExpressions) {
-          if (expr.thai && expr.meaning) {
+          if ((expr.word || expr.thai) && expr.meaning) {
             const vocabId =
               Date.now().toString() + Math.random().toString(36).substring(7);
             const vocabRef = doc(
@@ -747,7 +771,7 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
             await withFirestoreRetry(
               () => setDoc(vocabRef, {
                 id: vocabId,
-                thai: expr.thai,
+                word: expr.word || expr.thai,
                 meaning: expr.meaning,
                 exampleSentence: expr.exampleSentence || "",
                 exampleMeaning: expr.exampleMeaning || "",
@@ -874,8 +898,24 @@ ${finalTranscript.map((t) => `${t.role === "tutor" ? "Tutor" : "Student"}: ${t.t
 
         <div className="flex-1 p-6 flex flex-col items-center justify-center relative">
           {error ? (
-            <div className="text-red-500 text-center mb-4 p-4 bg-red-50 rounded-xl">
-              {error}
+            <div className="mx-4 mb-4 p-4 bg-red-50 border border-red-100 rounded-2xl">
+              <div className="flex items-center gap-2 text-red-700 mb-2">
+                <Loader2 className="w-4 h-4" />
+                <p className="text-sm font-bold">{error}</p>
+              </div>
+              {micError && micError.instructions.length > 0 && (
+                <div className="bg-white/50 p-3 rounded-xl border border-red-100 text-left">
+                  <p className="text-xs font-bold text-red-800 mb-2 uppercase tracking-wider">How to fix:</p>
+                  <ul className="space-y-1.5">
+                    {micError.instructions.map((inst, i) => (
+                      <li key={i} className="text-xs text-red-600 flex gap-2">
+                        <span className="font-bold text-red-400">{i + 1}.</span>
+                        {inst}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           ) : (
             <>

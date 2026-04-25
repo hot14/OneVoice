@@ -1,32 +1,96 @@
-export const ENGLISH_PROFICIENCY_RUBRIC = [
-  { 
-    level: 1, 
-    title: { ko: '초급 (Novice)', en: 'Novice' }, 
-    desc: { ko: '기본 인사말, 숫자, 필수 생존 영어를 구사하며 기초 문법을 이해합니다.', en: 'Can use basic greetings, numbers, essential survival English, and understand basic grammar.' } 
+/**
+ * Proficiency Rubric for Language Learning
+ * Standardizes the evaluation of user level from 1 to 10.
+ */
+
+export interface LevelDefinition {
+  level: number;
+  title: string;
+  description: string;
+  milestones: string[];
+}
+
+export const PROFICIENCY_RUBRIC: Record<number, LevelDefinition> = {
+  1: {
+    level: 1,
+    title: "Absolute Beginner",
+    description: "Can understand and use very basic everyday expressions and simple phrases.",
+    milestones: ["Greetings", "Basic self-introduction", "Numbers 1-100"]
   },
-  { 
-    level: 10, 
-    title: { ko: '초상급 (Upper Novice)', en: 'Upper Novice' }, 
-    desc: { ko: '일상적인 주제로 대화가 가능하며 비격식 회화 및 슬랭 트랙이 해제됩니다.', en: 'Can converse on daily topics; informal conversation and slang tracks unlocked.' } 
+  2: {
+    level: 2,
+    title: "Beginner",
+    description: "Can understand sentences and frequently used expressions related to areas of most immediate relevance.",
+    milestones: ["Family information", "Local geography", "Employment basics"]
   },
-  { 
-    level: 25, 
-    title: { ko: '중급 (Intermediate)', en: 'Intermediate' }, 
-    desc: { ko: '비즈니스 미팅, 식당 주문, 길 찾기 등 복잡한 상황을 영어로 해결할 수 있습니다.', en: 'Can handle complex situations like business meetings, ordering at restaurants, or asking for directions in English.' } 
+  3: {
+    level: 3,
+    title: "Upper Beginner",
+    description: "Can communicate in simple and routine tasks requiring a simple and direct exchange of information.",
+    milestones: ["Daily routines", "Shopping", "Basic past tense"]
   },
-  { 
-    level: 50, 
-    title: { ko: '중상급 (Upper Intermediate)', en: 'Upper Intermediate' }, 
-    desc: { ko: '인터뷰, 고급 계약 협상 등 고관여 전문 어휘를 구사할 수 있습니다.', en: 'Can handle high-stakes scenarios like interviews or contract negotiations.' } 
+  4: {
+    level: 4,
+    title: "Pre-Intermediate",
+    description: "Can deal with most situations likely to arise while travelling in an area where the language is spoken.",
+    milestones: ["Travel situations", "Future plans", "Expressing opinions simply"]
   },
-  { 
-    level: 75, 
-    title: { ko: '고급 (Advanced)', en: 'Advanced' }, 
-    desc: { ko: '문학 작품 이해, 지역 방언, 격식 있는 문어체 모듈을 사용할 수 있는 수준입니다.', en: 'Can understand literary works, regional dialects, and formal written language modules.' } 
+  5: {
+    level: 5,
+    title: "Intermediate",
+    description: "Can produce simple connected text on topics which are familiar or of personal interest.",
+    milestones: ["Describing experiences", "Dreams and ambitions", "Briefly giving reasons"]
   },
-  { 
-    level: 100, 
-    title: { ko: '마스터 (Master)', en: 'Master' }, 
-    desc: { ko: '모든 시나리오 및 자유 형식의 토론 노드에 접근 가능한 최상위 수준입니다.', en: 'Highest level with access to all scenarios and free-form discussion nodes.' } 
+  6: {
+    level: 6,
+    title: "Upper Intermediate",
+    description: "Can understand the main ideas of complex text on both concrete and abstract topics.",
+    milestones: ["Technical discussions in field of specialization", "Spontaneous interaction", "Clear, detailed text"]
+  },
+  7: {
+    level: 7,
+    title: "Pre-Advanced",
+    description: "Can express ideas fluently and spontaneously without much obvious searching for expressions.",
+    milestones: ["Flexible use of language", "Social/professional purposes", "Complex subjects"]
+  },
+  8: {
+    level: 8,
+    title: "Advanced",
+    description: "Can understand a wide range of demanding, longer texts, and recognize implicit meaning.",
+    milestones: ["Nuanced expression", "Implicit meaning recognition", "Well-structured text"]
+  },
+  9: {
+    level: 9,
+    title: "Upper Advanced",
+    description: "Can express him/herself spontaneously, very fluently and precisely, differentiating finer shades of meaning.",
+    milestones: ["Idiomatic expressions", "Colloquialisms", "Near-native precision"]
+  },
+  10: {
+    level: 10,
+    title: "Master",
+    description: "Can understand with ease virtually everything heard or read.",
+    milestones: ["Summarizing information from different sources", "Reconstructing arguments", "Spontaneous, fluent, precise expression"]
   }
-];
+};
+
+/**
+ * Calculates the new level based on current level and diagnosed level from a session.
+ * Uses a weighted average to prevent sudden jumps.
+ */
+export function calculateNewLevel(currentLevel: number, diagnosedLevel: number): number {
+  if (currentLevel === 0) return diagnosedLevel;
+  
+  // Weighted average: 80% current, 20% new session
+  const newLevel = (currentLevel * 0.8) + (diagnosedLevel * 0.2);
+  
+  // Round to 1 decimal place
+  return Math.round(newLevel * 10) / 10;
+}
+
+/**
+ * Gets the title for a given level
+ */
+export function getLevelTitle(level: number): string {
+  const roundedLevel = Math.floor(level);
+  return PROFICIENCY_RUBRIC[roundedLevel]?.title || "Unknown";
+}

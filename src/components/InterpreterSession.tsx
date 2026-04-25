@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { GoogleGenAI, Modality, LiveServerMessage, ThinkingLevel } from "@google/genai";
 import { Mic, X, Volume2, Loader2, VolumeX } from "lucide-react";
 import { AudioRecorder, AudioPlayer } from "../lib/audioUtils";
+import { getMicErrorDetails, MicErrorDetails } from "../lib/micUtils";
 import { useLanguage, Language, languageNames } from "../contexts/LanguageContext";
 import { auth, db } from "../firebase";
 import { doc, collection, setDoc, serverTimestamp, updateDoc, increment } from "firebase/firestore";
@@ -35,6 +36,7 @@ export function InterpreterSession({
   const [isConnecting, setIsConnecting] = useState(false);
   const [isInterrupted, setIsInterrupted] = useState(false); // Barge-in feedback
   const [error, setError] = useState<string | null>(null);
+  const [micError, setMicError] = useState<MicErrorDetails | null>(null);
   const [voiceFeedbackEnabled, setVoiceFeedbackEnabled] = useState(true);
   const voiceFeedbackRef = useRef(true);
   const startTimeRef = useRef<number | null>(null);
@@ -159,24 +161,23 @@ export function InterpreterSession({
     try {
       setIsConnecting(true);
       setError(null);
+      setMicError(null);
 
-      // Request microphone permission first
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(track => track.stop());
-      } catch (err) {
-        throw new Error("Microphone permission denied. Please allow microphone access to use the interpreter.");
-      }
-
-      const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
       playerRef.current = new AudioPlayer();
 
       const speed = parseInt(localStorage.getItem('translationSpeed') || '3');
-      // Increase temperature slightly for stability in fast modes
-      const temperature = [0.7, 0.5, 0.4, 0.3, 0.25][speed - 1];
+      // Lower temperature for faster, more deterministic responses
+      const temperature = [0.4, 0.3, 0.2, 0.15, 0.1][speed - 1];
       const speedLabel = ["Precise", "Balanced", "Fast", "Very Fast", "Ultra-fast"][speed - 1];
 
-      const systemInstruction = `당신은 세계 최고 수준의 '무중단 동시통역사'입니다. 사용자가 말하는 언어를 자동으로 감지하여, ${languageNames[sourceLanguage]} 또는 ${languageNames[targetLanguage]} 중 상대방의 언어로 실시간 음성 번역을 제공해야 합니다.
+      const systemInstruction = `당신은 세계 최고 수준의 '무중단 동시통역사'입니다. 
+당신의 임무는 ${languageNames[sourceLanguage]}와 ${languageNames[targetLanguage]} 사이의 실시간 동시통역을 제공하는 것입니다.
+
+[동작 원리]
+1. 사용자가 ${languageNames[sourceLanguage]}로 말하면 즉시 ${languageNames[targetLanguage]}로 번역하여 음성으로 출력하십시오.
+2. 사용자가 ${languageNames[targetLanguage]}로 말하면 즉시 ${languageNames[sourceLanguage]}로 번역하여 음성으로 출력하십시오.
+3. 별도의 언어 감지 설정 없이, 입력되는 음성의 언어를 자동으로 판단하여 상대방의 언어로 즉시 전환하여 번역하십시오.
 
 [Conversational Rules - ${speedLabel} 모드]
 1. [가장 중요한 규칙]: 사용자가 문장을 끝마칠 때까지 기다리지 마십시오. 문장의 완성도보다 속도와 실시간성을 우선시하십시오.
@@ -215,9 +216,11 @@ export function InterpreterSession({
               });
               await recorderRef.current.start();
               setIsConnecting(false);
-            } catch (err) {
+            } catch (err: any) {
               console.error("Error starting audio recorder:", err);
-              setError("Failed to start audio recorder: " + (err instanceof Error ? err.message : String(err)));
+              const details = getMicErrorDetails(err);
+              setMicError(details);
+              setError(details.message);
               stopSession();
             }
           },
@@ -271,9 +274,11 @@ export function InterpreterSession({
       });
 
       sessionRef.current = sessionPromise;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to start session:", err);
-      setError(err instanceof Error ? err.message : "Failed to start the interpreter session.");
+      const details = getMicErrorDetails(err);
+      setMicError(details);
+      setError(details.message);
       setIsConnecting(false);
     }
   };
@@ -334,7 +339,7 @@ export function InterpreterSession({
       // Use semantic cache wrapper for API call
       const { response: responseText, cached } = await generateChatResponseCached(
         prompt,
-        import.meta.env.VITE_GEMINI_API_KEY || '',
+        process.env.GEMINI_API_KEY || '',
         undefined,
         undefined,
         "json"
@@ -463,20 +468,31 @@ export function InterpreterSession({
       </div>
 
       {/* Control Bar */}
-      <div className="p-4 border-t border-[#141414] bg-white flex justify-center shrink-0">
-        {error ? (
-          <div className="text-[#141414] text-center p-3 border border-red-500 bg-red-100 w-full">
+      <div className="p-4 border-t border-[#141414] bg-white flex flex-col items-center gap-3 shrink-0">
+        {error && (
+          <div className="text-[#141414] text-center p-3 border border-red-500 bg-red-100 w-full mb-2">
             <p className="font-bold font-mono uppercase text-xs">Error</p>
             <p className="font-mono text-[10px]">{error}</p>
+            {micError && micError.instructions.length > 0 && (
+              <div className="mt-2 text-left bg-white/50 p-2 rounded border border-red-200">
+                <p className="font-bold text-[9px] mb-1 uppercase">Instructions:</p>
+                <ul className="list-disc list-inside text-[9px] space-y-0.5">
+                  {micError.instructions.map((inst, i) => (
+                    <li key={i}>{inst}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
-        ) : (
-          <button
-            onClick={isRecording ? stopSession : startSession}
-            className={`w-full max-w-sm py-3 border-2 border-[#141414] font-mono font-bold text-base uppercase tracking-widest transition-all shadow-[3px_3px_0px_0px_rgba(20,20,20,1)] hover:shadow-none hover:translate-x-[3px] hover:translate-y-[3px] ${isRecording ? "bg-white text-[#141414]" : "bg-[#141414] text-white"}`}
-          >
-            {isConnecting ? "Connecting..." : isRecording ? "Stop" : "Start"}
-          </button>
         )}
+        
+        <button
+          onClick={isRecording ? stopSession : startSession}
+          disabled={isConnecting}
+          className={`w-full max-w-sm py-3 border-2 border-[#141414] font-mono font-bold text-base uppercase tracking-widest transition-all shadow-[3px_3px_0px_0px_rgba(20,20,20,1)] hover:shadow-none hover:translate-x-[3px] hover:translate-y-[3px] ${isRecording ? "bg-white text-[#141414]" : "bg-[#141414] text-white"}`}
+        >
+          {isConnecting ? "Connecting..." : isRecording ? "Stop" : "Start"}
+        </button>
       </div>
     </div>
   );

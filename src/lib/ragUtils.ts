@@ -1,399 +1,194 @@
 import { GoogleGenAI } from "@google/genai";
+import { collection, getDocs } from "firebase/firestore";
 import { db, auth } from "../firebase";
-import { doc, setDoc, getDoc, collection, writeBatch, getDocs, serverTimestamp, query, orderBy } from "firebase/firestore";
-import { debug, warn, error as loggerError } from './logger';
-import { getEmbedder } from './embeddingModel';
+import { ApiSettings } from "../types";
+import { semanticCache } from "./semanticCache";
+import { generateEmbedding, cosineSimilarity } from "./embeddingService";
 
-export interface ApiSettings {
-  provider: string; // 'gemini' | 'custom' | 'openai' | 'embedgemma'
-  baseUrl?: string;
-  apiKey?: string;
-  model?: string;
-}
+/**
+ * Generates a chat response using the configured provider.
+ */
+export async function generateChatResponse(
+  prompt: string,
+  defaultApiKey: string,
+  settings?: ApiSettings,
+  systemInstruction?: string,
+  responseFormat?: "text" | "json"
+): Promise<string> {
+  const provider = settings?.provider || "gemini";
+  const apiKey = settings?.apiKey || defaultApiKey;
 
-export function chunkText(text: string, chunkSize = 3000, overlap = 500): string[] {
-  const chunks: string[] = [];
-  let i = 0;
-  while (i < text.length) {
-    chunks.push(text.slice(i, i + chunkSize));
-    i += chunkSize - overlap;
-  }
-  return chunks;
-}
-
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-export async function generateEmbeddings(texts: string[], apiKey: string, embeddingApiSettings?: ApiSettings): Promise<number[][]> {
-  // Determine provider priority:
-  // 1. 'embedgemma' - on-device EmbeddingGemma (free, mobile-optimized)
-  // 2. 'openai' or 'custom' - API based
-  // 3. 'gemini' - Gemini API
-  // 4. Auto-detect - try EmbeddingGemma first, fallback to OpenAI API
-
-  const provider = embeddingApiSettings?.provider || 'auto';
-  const customKey = embeddingApiSettings?.apiKey || apiKey;
-  const baseUrl = embeddingApiSettings?.baseUrl || 'https://api.openai.com/v1';
-  const embeddingModelName = embeddingApiSettings?.model || 'text-embedding-3-small';
-
-  // Try on-device EmbeddingGemma first (free, mobile-optimized)
-  if (provider === 'embedgemma' || provider === 'auto') {
-    const model = await getEmbedder();
-    if (model) {
-      const embeddings: number[][] = [];
-      for (const text of texts) {
-        // Cast to any since we know this is a feature-extraction pipeline
-        const result = await (model as any)(text, { pooling: 'mean', normalize: true });
-        // Result is a 2D array, extract the embedding vector
-        const embedding = Array.from(result.data as unknown as number[]);
-        embeddings.push(embedding);
+  if (provider === "gemini") {
+    const genAI = new GoogleGenAI({ apiKey });
+    const result = await genAI.models.generateContent({
+      model: settings?.model || "gemini-1.5-flash",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      config: {
+        systemInstruction: systemInstruction ? { 
+          role: "system", 
+          parts: [{ text: systemInstruction }] 
+        } : undefined
       }
-      return embeddings;
-    }
-  }
-
-  // Fallback to API-based embedding
-  const isCustom = provider === 'openai' || provider === 'custom';
-  const ai = new GoogleGenAI({ apiKey });
-  const embeddings: number[][] = [];
-
-  // Process in smaller batches to avoid rate limits
-  // Reduced concurrency to minimize API rate limiting
-  const concurrency = isCustom ? 3 : 2;
-  for (let i = 0; i < texts.length; i += concurrency) {
-    const batch = texts.slice(i, i + concurrency);
-    const promises = batch.map(async (text) => {
-      let retries = 3;
-      let delay = 2000;
-      while (retries > 0) {
-        try {
-          if (isCustom) {
-            const endpoint = baseUrl.endsWith('/embeddings')
-              ? baseUrl
-              : `${baseUrl.replace(/\/$/, '')}/embeddings`;
-
-            const res = await fetch(endpoint, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${customKey}`
-              },
-              body: JSON.stringify({
-                model: embeddingModelName,
-                input: text
-              })
-            });
-            if (!res.ok) {
-              const errText = await res.text();
-              throw new Error(`Custom API Error: ${res.status} ${errText}`);
-            }
-            const data = await res.json();
-            return data.data[0].embedding;
-          } else {
-            const result = await ai.models.embedContent({
-              model: 'gemini-embedding-2-preview',
-              contents: text,
-            });
-            return result.embeddings?.[0]?.values || [];
-          }
-        } catch (error: any) {
-          if (error?.status === 429 || error?.message?.includes('429') || error?.message?.includes('Quota') || error?.message?.includes('RESOURCE_EXHAUSTED') || error?.message?.includes('Too Many Requests')) {
-            retries--;
-            if (retries === 0) throw error;
-            warn(`Rate limit hit, retrying in ${delay}ms...`);
-            await sleep(delay);
-            delay *= 2;
-          } else {
-            throw error;
-          }
-        }
-      }
-      return [];
     });
-
-    const batchEmbeddings = await Promise.all(promises);
-    embeddings.push(...batchEmbeddings);
-
-    if (i + concurrency < texts.length) {
-      await sleep(isCustom ? 500 : 1500);
-    }
-  }
-  return embeddings;
-}
-
-export function cosineSimilarity(a: number[], b: number[]): number {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  if (normA === 0 || normB === 0) return 0;
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-export async function generateChatResponse(prompt: string, apiKey: string, chatApiSettings?: ApiSettings, systemInstruction?: string, responseFormat?: "json" | "text", history?: { role: "user" | "model" | "tutor"; text: string }[]): Promise<string> {
-  const isCustom = chatApiSettings?.provider === 'custom' || chatApiSettings?.provider === 'openai';
-  const customKey = chatApiSettings?.apiKey || apiKey;
-  const baseUrl = chatApiSettings?.baseUrl || 'https://api.openai.com/v1';
-  // Default to gpt-4o-mini for cost efficiency ($0.15/1M input vs $2.50 for gpt-4o)
-  const chatModel = chatApiSettings?.model || 'gpt-4o-mini';
-
-  if (isCustom) {
-    const messages = [];
-    if (systemInstruction) {
-      messages.push({ role: 'system', content: systemInstruction });
-    }
-    if (history) {
-      for (const msg of history) {
-        messages.push({
-          role: msg.role === "user" ? "user" : "assistant",
-          content: msg.text
-        });
-      }
-    }
-    messages.push({ role: 'user', content: prompt });
-
-    const body: any = {
-      model: chatModel,
-      messages: messages
-    };
+    let text = result.candidates?.[0]?.content?.parts?.[0]?.text || "";
     
     if (responseFormat === "json") {
-      body.response_format = { type: "json_object" };
+      // Basic JSON extraction if model returns markdown
+      text = text.replace(/```json\n?/, "").replace(/\n?```/, "").trim();
     }
-
-    const endpoint = baseUrl.endsWith('/chat/completions')
-      ? baseUrl 
-      : `${baseUrl.replace(/\/$/, '')}/chat/completions`;
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
+    return text;
+  } else if (provider === "openai" || provider === "custom") {
+    const baseUrl = settings?.baseUrl || "https://api.openai.com/v1";
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${customKey}`
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        model: settings?.model || "gpt-4o-mini",
+        messages: [
+          ...(systemInstruction ? [{ role: "system", content: systemInstruction }] : []),
+          { role: "user", content: prompt }
+        ],
+        response_format: responseFormat === "json" ? { type: "json_object" } : undefined
+      })
     });
-    
-    if (!res.ok) {
-      throw new Error(`Custom Chat API failed: ${res.statusText}`);
+
+    if (!response.ok) {
+      throw new Error(`API failed: ${response.statusText}`);
     }
-    
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || "";
-  } else {
-    const ai = new GoogleGenAI({ apiKey });
-    const config: any = {};
-    if (systemInstruction) {
-      config.systemInstruction = systemInstruction;
-    }
-    if (responseFormat === "json") {
-      config.responseMimeType = "application/json";
-    }
-    
-    let contents: any[] = [];
-    if (history) {
-      for (const msg of history) {
-        contents.push({
-          role: msg.role === "user" ? "user" : "model",
-          parts: [{ text: msg.text }]
-        });
-      }
-    }
-    contents.push({
-      role: "user",
-      parts: [{ text: prompt }]
-    });
-    
-    const result = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: contents,
-      config: config
-    });
-    return result.text || "";
+
+    const data = await response.json();
+    return data.choices[0].message.content;
   }
+
+  throw new Error(`Unsupported provider: ${provider}`);
 }
 
 /**
- * 시맨틱 캐시를 활용한 Chat API 호출 래퍼
- * 중복/유사 프롬프트에 대해 API 호출 없이 캐시 응답 반환
- * @param prompt 프롬프트
- * @param apiKey API 키
- * @param chatApiSettings API 설정
- * @param systemInstruction 시스템 명령어
- * @param responseFormat 응답 형식
- * @param history 대화 히스토리
- * @returns API 응답 문자열
+ * Cached version of generateChatResponse
  */
 export async function generateChatResponseCached(
   prompt: string,
-  apiKey: string,
-  chatApiSettings?: ApiSettings,
+  defaultApiKey: string,
+  settings?: ApiSettings,
   systemInstruction?: string,
-  responseFormat?: "json" | "text",
-  history?: { role: "user" | "model" | "tutor"; text: string }[]
+  responseFormat?: "text" | "json"
 ): Promise<{ response: string; cached: boolean }> {
-  // Import here to avoid circular dependency
-  const { getSemanticCachedResponse } = await import('./semanticCache');
+  // Check cache first
+  const cachedResponse = semanticCache.get<string>(prompt);
+  if (cachedResponse) {
+    return { response: cachedResponse, cached: true };
+  }
 
-  const { response, cached } = await getSemanticCachedResponse(
-    prompt,
-    () => generateChatResponse(prompt, apiKey, chatApiSettings, systemInstruction, responseFormat, history)
-  );
-
-  return { response, cached };
-}
-
-export async function processAndStoreMaterial(fileId: string, fileName: string, content: string, apiKey: string, chatApiSettings?: ApiSettings, embeddingApiSettings?: ApiSettings) {
-  if (!auth.currentUser) throw new Error("Not authenticated");
-  const uid = auth.currentUser.uid;
+  const response = await generateChatResponse(prompt, defaultApiKey, settings, systemInstruction, responseFormat);
   
-  // 1. Check if already processed
-  const materialRef = doc(db, "users", uid, "materials", fileId);
-  const materialSnap = await getDoc(materialRef);
-  if (materialSnap.exists()) {
-    return materialSnap.data();
-  }
-
-  // 2. Generate summary
-  let summary = "No summary available.";
-  const summaryPrompt = `Summarize the following document in 2-3 sentences. Focus on the main topics and key takeaways. Document:\n\n${content.substring(0, 10000)}`;
-
-  try {
-    const { response } = await generateChatResponseCached(summaryPrompt, apiKey, chatApiSettings);
-    summary = response;
-  } catch (error) {
-    loggerError("Failed to generate summary:", error);
-  }
-
-  // 3. Chunk and Embed
-  const chunks = chunkText(content);
-  const embeddings = await generateEmbeddings(chunks, apiKey, embeddingApiSettings);
-
-  // 4. Save to Firestore
-  // Save material doc
-  await setDoc(materialRef, {
-    id: fileId,
-    name: fileName,
-    summary,
-    createdAt: serverTimestamp()
-  });
-
-  // Save chunks in batches
-  const chunksRef = collection(db, "users", uid, "materials", fileId, "chunks");
-  let batch = writeBatch(db);
-  let count = 0;
-
-  for (let i = 0; i < chunks.length; i++) {
-    const chunkDocRef = doc(chunksRef, `chunk_${i}`);
-    batch.set(chunkDocRef, {
-      text: chunks[i],
-      embedding: embeddings[i],
-      index: i
-    });
-    count++;
-
-    if (count === 400) { // Firestore batch limit is 500
-      await batch.commit();
-      batch = writeBatch(db);
-      count = 0;
-    }
-  }
-  if (count > 0) {
-    await batch.commit();
-  }
-
-  return { id: fileId, name: fileName, summary };
+  // Store in cache
+  semanticCache.set(prompt, response);
+  
+  return {
+    response,
+    cached: false
+  };
 }
 
-export async function retrieveRelevantChunks(queryText: string, materialIds: string[], apiKey: string, embeddingApiSettings?: ApiSettings, topK = 5) {
-  if (!auth.currentUser || materialIds.length === 0) return [];
-  const uid = auth.currentUser.uid;
-
-  // Embed query - try on-device EmbeddingGemma first (free, mobile-optimized)
-  const provider = embeddingApiSettings?.provider || 'auto';
-  const customKey = embeddingApiSettings?.apiKey || apiKey;
-  const baseUrl = embeddingApiSettings?.baseUrl || 'https://api.openai.com/v1';
-  const embeddingModel = embeddingApiSettings?.model || 'text-embedding-3-small';
-
-  let queryEmbedding: number[] | undefined;
-
-  try {
-    // Try EmbeddingGemma first (free, on-device)
-    if (provider === 'embedgemma' || provider === 'auto') {
-      const model = await getEmbedder();
-      if (model) {
-        const result = await (model as any)(queryText, { pooling: 'mean', normalize: true });
-        queryEmbedding = Array.from(result.data as unknown as number[]);
-      }
-    }
-
-    // Fallback to API-based
-    if (!queryEmbedding) {
-      const isCustom = provider === 'openai' || provider === 'custom';
-      if (isCustom) {
-        const endpoint = baseUrl.endsWith('/embeddings')
-          ? baseUrl
-          : `${baseUrl.replace(/\/$/, '')}/embeddings`;
-
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${customKey}`
-          },
-          body: JSON.stringify({
-            model: embeddingModel,
-            input: queryText
-          })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          queryEmbedding = data.data?.[0]?.embedding;
-        }
-      } else {
-        const ai = new GoogleGenAI({ apiKey });
-        const queryResult = await ai.models.embedContent({
-          model: 'gemini-embedding-2-preview',
-          contents: queryText,
-        });
-        queryEmbedding = queryResult.embeddings?.[0]?.values;
-      }
-    }
-  } catch (error) {
-    loggerError("Failed to embed query:", error);
+/**
+ * Retrieves relevant chunks from materials using on-device embeddings.
+ */
+export async function retrieveRelevantChunks(
+  query: string,
+  materialIds: string[],
+  defaultApiKey: string,
+  settings: ApiSettings,
+  topK: number = 3
+): Promise<any[]> {
+  console.log(`Retrieving chunks for: ${query} in materials: ${materialIds}`);
+  
+  // 1. Generate embedding for the query
+  const queryEmbedding = await generateEmbedding(query);
+  if (!queryEmbedding) {
+    console.warn("Falling back to keyword search (embedding failed)");
     return [];
   }
 
-  if (!queryEmbedding) return [];
+  if (!auth.currentUser) return [];
 
-  // 2. Fetch all chunks for active materials
-  const allChunks: { text: string, embedding: number[], materialId: string }[] = [];
-  
+  const allChunks: any[] = [];
+
+  // 2. Fetch chunks from all specified materials
   for (const materialId of materialIds) {
-    const chunksRef = collection(db, "users", uid, "materials", materialId, "chunks");
-    const q = query(chunksRef, orderBy("index"));
-    const snapshot = await getDocs(q);
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      allChunks.push({
-        text: data.text,
-        embedding: data.embedding,
-        materialId
+    try {
+      const chunksRef = collection(db, "users", auth.currentUser.uid, "materials", materialId, "chunks");
+      const snap = await getDocs(chunksRef);
+      snap.forEach(d => {
+        const data = d.data();
+        if (data.embedding) {
+          const similarity = cosineSimilarity(queryEmbedding, data.embedding);
+          allChunks.push({
+            text: data.text,
+            similarity,
+            materialId
+          });
+        }
       });
-    });
+    } catch (err) {
+      console.error(`Failed to fetch chunks for material ${materialId}:`, err);
+    }
   }
 
-  // 3. Calculate similarity and sort
-  const scoredChunks = allChunks.map(chunk => ({
-    ...chunk,
-    score: cosineSimilarity(queryEmbedding, chunk.embedding)
-  }));
+  // 3. Sort by similarity and return top K
+  return allChunks
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, topK);
+}
 
-  scoredChunks.sort((a, b) => b.score - a.score);
+/**
+ * Retrieves context using its Knowledge Graph neighborhood.
+ * This is more token-efficient than raw text retrieval.
+ */
+export async function retrieveGraphContext(
+  materialId: string,
+  query: string,
+  topK: number = 5
+): Promise<string> {
+  const userId = auth.currentUser?.uid;
+  if (!userId) return "";
 
-  // 4. Return top K
-  return scoredChunks.slice(0, topK);
+  // 1. Find nodes matching query keywords or description
+  const nodesRef = collection(db, "users", userId, "materials", materialId, "nodes");
+  const snap = await getDocs(nodesRef);
+  
+  const matches: any[] = [];
+  snap.forEach(d => {
+    const data = d.data();
+    if (data.label.toLowerCase().includes(query.toLowerCase()) || 
+        data.description?.toLowerCase().includes(query.toLowerCase())) {
+          matches.push({ id: d.id, ...data });
+    }
+  });
+
+  if (matches.length === 0) return "";
+
+  // 2. Fetch related edges to build a "local map"
+  const edgesRef = collection(db, "users", userId, "materials", materialId, "edges");
+  const edgesSnap = await getDocs(edgesRef);
+  const allEdges: any[] = [];
+  edgesSnap.forEach(d => allEdges.push({ id: d.id, ...d.data() }));
+
+  // Build context string from the localized graph
+  let context = "Knowledge Graph Summary:\n";
+  matches.slice(0, topK).forEach(node => {
+     context += `- ${node.label} (${node.type}): ${node.description || "No description"}\n`;
+     // Find outgoing relationships
+     const relations = allEdges.filter(e => e.source === node.id);
+     relations.forEach(rel => {
+       const target = snap.docs.find(d => d.id === rel.target)?.data();
+       if (target) {
+         context += `  * ${rel.type} -> ${target.label} (${target.type})\n`;
+       }
+     });
+  });
+
+  return context;
 }

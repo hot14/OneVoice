@@ -17,10 +17,11 @@
       "description": "Vocabulary item",
       "type": "object",
       "properties": {
+        "word": { "type": "string" },
         "thai": { "type": "string" },
         "meaning": { "type": "string" }
       },
-      "required": ["thai", "meaning"]
+      "required": ["meaning"]
     },
     "Lesson": {
       "title": "Lesson",
@@ -30,6 +31,52 @@
         "topic": { "type": "string" }
       },
       "required": ["topic"]
+    },
+    "Material": {
+      "title": "Material",
+      "description": "Study material metadata",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name"]
+    },
+    "Chunk": {
+      "title": "Chunk",
+      "description": "Text chunk with embedding",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "embedding": { "type": "array", "items": { "type": "number" } },
+        "index": { "type": "number" }
+      },
+      "required": ["text", "embedding"]
+    },
+    "Node": {
+      "title": "Node",
+      "description": "Knowledge graph node",
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "type": { "type": "string", "enum": ["concept", "entity", "function", "module", "term"] },
+        "description": { "type": "string" },
+        "confidence": { "type": "number" }
+      },
+      "required": ["label", "type"]
+    },
+    "Edge": {
+      "title": "Edge",
+      "description": "Knowledge graph relationship",
+      "type": "object",
+      "properties": {
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "type": { "type": "string" },
+        "confidence": { "type": "number" }
+      },
+      "required": ["source", "target", "type"]
     }
   },
   "firestore": {
@@ -44,6 +91,22 @@
     "/users/{userId}/lessons/{lessonId}": {
       "schema": { "$ref": "Lesson" },
       "description": "Lesson history"
+    },
+    "/users/{userId}/materials/{materialId}": {
+      "schema": { "$ref": "Material" },
+      "description": "Study materials"
+    },
+    "/users/{userId}/materials/{materialId}/chunks/{chunkId}": {
+      "schema": { "$ref": "Chunk" },
+      "description": "Material chunks"
+    },
+    "/users/{userId}/materials/{materialId}/nodes/{nodeId}": {
+      "schema": { "$ref": "Node" },
+      "description": "Knowledge graph nodes"
+    },
+    "/users/{userId}/materials/{materialId}/edges/{edgeId}": {
+      "schema": { "$ref": "Edge" },
+      "description": "Knowledge graph edges"
     }
   }
 }

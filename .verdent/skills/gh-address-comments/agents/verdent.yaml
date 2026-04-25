@@ -1,7 +1,0 @@
-category: Development
-interface:
-  display_name: 'GitHub PR Review'
-  short_description: 'Help respond to review comments and issues on the current GitHub pull request.'
-  icon_dark: './assets/icon-dark.png'
-  icon_light: './assets/icon-light.png'
-  default_prompt: 'Help address review comments on the current GitHub PR.'

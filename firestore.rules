@@ -3,6 +3,46 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - displayName: string (optional)
+    //   - level: number (optional)
+    //
+    // Collection: users/{userId}/vocabulary
+    // Document ID: {vocabId}
+    // Fields:
+    //   - word: string (optional)
+    //   - thai: string (optional)
+    //   - meaning: string (required)
+    //
+    // Collection: users/{userId}/lessons
+    // Document ID: {lessonId}
+    // Fields:
+    //   - topic: string (required)
+    //
+    // Collection: users/{userId}/materials
+    // Document ID: {materialId}
+    // Fields:
+    //   - name: string (required)
+    //   - content: string (optional)
+    //   - createdAt: timestamp (optional)
+    //
+    // Collection: users/{userId}/materials/{materialId}/chunks
+    // Document ID: {chunkId}
+    // Fields:
+    //   - text: string (required)
+    //   - embedding: list (required)
+    //   - index: number (optional)
+    //
+    // ===============================================================
+
     // Helper functions
     function isAuthenticated() {
       return request.auth != null;
@@ -12,11 +52,10 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Admin check using Firebase Custom Claims
-    // Set admin claims via Firebase Admin SDK:
-    // admin.auth().setCustomUserClaims(uid, { admin: true })
+    // Admin check
     function isAdmin() {
-      return isAuthenticated() && request.auth.token.admin == true;
+      return isAuthenticated() && 
+        (request.auth.token.email == "gagatrack@gmail.com" && request.auth.token.email_verified == true);
     }
 
     // Validator functions
@@ -25,11 +64,19 @@ service cloud.firestore {
     }
 
     function isValidVocabulary(data) {
-      return data.thai is string && data.meaning is string;
+      return (data.word is string || data.thai is string) && data.meaning is string;
     }
 
     function isValidLesson(data) {
       return data.topic is string;
+    }
+
+    function isValidMaterial(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 255;
+    }
+
+    function isValidChunk(data) {
+      return data.text is string && data.text.size() > 0 && data.embedding is list;
     }
 
     function isImmutable(field) {
@@ -52,6 +99,28 @@ service cloud.firestore {
         allow read: if isOwner(userId) || isAdmin();
         allow create, update: if isOwner(userId) && isValidLesson(request.resource.data);
         allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /materials/{materialId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create, update: if isOwner(userId) && isValidMaterial(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+
+        match /chunks/{chunkId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow create, update: if isOwner(userId) && isValidChunk(request.resource.data);
+          allow delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /nodes/{nodeId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow create, update, delete: if isOwner(userId) || isAdmin();
+        }
+
+        match /edges/{edgeId} {
+          allow read: if isOwner(userId) || isAdmin();
+          allow create, update, delete: if isOwner(userId) || isAdmin();
+        }
       }
 
       match /conversations/{conversationId} {

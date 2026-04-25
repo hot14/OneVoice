@@ -1,10 +1,8 @@
 import React from 'react';
-import { X } from 'lucide-react';
+import { X, Trash2 } from 'lucide-react';
 import { useLanguage, languageNames, Language } from '../contexts/LanguageContext';
 import { getLocalStorageNumber } from '../lib/storageUtils';
-
-// Valid language codes
-const VALID_LANGUAGE_CODES: Language[] = ['ko', 'en', 'th'];
+import { semanticCache } from '../lib/semanticCache';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -25,7 +23,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
 
   const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value as Language;
-    if (VALID_LANGUAGE_CODES.includes(value)) {
+    if (Object.keys(languageNames).includes(value)) {
       setUiLanguage(value);
     }
   };
@@ -55,7 +53,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             onChange={handleLanguageChange}
             className="w-full bg-white border border-gray-200 text-gray-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2 outline-none cursor-pointer"
           >
-            {Object.entries(languageNames).map(([code, name]) => (
+            {(Object.entries(languageNames) as [string, string][]).map(([code, name]) => (
               <option key={code} value={code}>
                 {name}
               </option>
@@ -79,6 +77,20 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             <span>Precise</span>
             <span>Ultra-fast</span>
           </div>
+        </div>
+
+        <div className="pt-4 border-t border-gray-100">
+          <button
+            onClick={() => {
+              if (confirm("Clear all cached AI responses? This will increase API usage for repeated queries.")) {
+                semanticCache.clear();
+              }
+            }}
+            className="w-full flex items-center justify-center gap-2 py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+          >
+            <Trash2 className="w-4 h-4" />
+            Clear Semantic Cache
+          </button>
         </div>
       </div>
     </div>

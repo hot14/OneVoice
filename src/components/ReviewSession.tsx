@@ -170,9 +170,9 @@ export function ReviewSession({ onClose, onComplete }: ReviewSessionProps) {
         <div className="flex-1 p-8 flex flex-col items-center justify-center min-h-[300px]">
           <div className="text-center mb-8">
             <p className="text-sm font-medium text-gray-400 uppercase tracking-widest mb-2">
-              {t("review.thai")}
+              {t("review.word")}
             </p>
-            <h3 className="text-5xl font-bold text-gray-900 mb-4">{currentItem.thai}</h3>
+            <h3 className="text-5xl font-bold text-gray-900 mb-4">{currentItem.word || currentItem.thai}</h3>
             {currentItem.pronunciation && (
               <p className="text-xl text-gray-500">{currentItem.pronunciation}</p>
             )}

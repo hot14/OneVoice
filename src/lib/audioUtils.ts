@@ -37,12 +37,15 @@ export class AudioRecorder {
     }
 
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('이 브라우저 환경에서는 마이크 접근이 지원되지 않습니다. 새 탭에서 열기를 시도하거나 다른 브라우저를 사용해 주세요. (Microphone access not supported in this context.)');
+      }
+
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          // Request native sample rate for efficiency
-          sampleRate: this.TARGET_SAMPLE_RATE,
+          autoGainControl: true,
         },
       });
 
@@ -84,10 +87,11 @@ export class AudioRecorder {
           view.setInt16(i * 2, pcm16[i], true);
         }
 
-        let binary = '';
         const bytes = new Uint8Array(buffer);
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i]);
+        let binary = '';
+        const chunk = 8192;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
         }
         const base64 = btoa(binary);
 
@@ -158,8 +162,8 @@ export class AudioPlayer {
   private nextPlayTime = 0;
   private isStopped = false;
 
-  // Use 16kHz to match recorder - avoids expensive resampling
-  private readonly SAMPLE_RATE = 16000;
+  // Gemini Live API default output is 24kHz
+  private readonly SAMPLE_RATE = 24000;
 
   constructor() {
     this.audioContext = new AudioContext({ sampleRate: this.SAMPLE_RATE });
@@ -170,9 +174,8 @@ export class AudioPlayer {
 
     try {
       const binaryString = atob(base64Data);
-      const len = binaryString.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
 

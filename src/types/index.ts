@@ -154,6 +154,7 @@ export interface MaterialData {
 
 export interface VocabularyItem {
   id: string;
+  word?: string;
   thai?: string;
   korean?: string;
   meaning?: string;

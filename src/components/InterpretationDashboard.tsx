@@ -20,9 +20,13 @@ import {
   Info,
   Search,
   BarChart,
+  FileText,
+  TrendingUp,
 } from "lucide-react";
 import { useLanguage, languageNames } from "../contexts/LanguageContext";
 import { LanguageSwitch } from "./LanguageSwitch";
+import { MaterialManager } from "./MaterialManager";
+import { LearningStats } from "./LearningStats";
 import type { UserProfile, ApiProvider } from "../types";
 
 // Type for conversation
@@ -66,13 +70,15 @@ export function InterpretationDashboard({
   const { t, sourceLanguage, targetLanguage, setSourceLanguage, setTargetLanguage, uiLanguage, setUiLanguage } = useLanguage();
   const language = sourceLanguage;
   const [showSettings, setShowSettings] = useState(false);
+  const [activeTab, setActiveTab] = useState<'history' | 'materials' | 'stats'>('history');
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [lessons, setLessons] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   // Security: Admin check using domain or custom claim (not hardcoded email)
-  const isAdmin = auth.currentUser?.email?.endsWith("@gagatrack.com") || userProfile?.isAdmin === true;
+  const isAdmin = auth.currentUser?.email === "gagatrack@gmail.com" || auth.currentUser?.email?.endsWith("@gagatrack.com") || userProfile?.isAdmin === true;
 
   // API settings state - consolidated
   const [chatApiProvider, setChatApiProvider] = useState<ApiProvider>("openai");
@@ -162,6 +168,19 @@ export function InterpretationDashboard({
       (err) => handleFirestoreError(err, OperationType.LIST, `users/${auth.currentUser?.uid}/conversations`)
     );
 
+    // Lessons subscription
+    const lessonsRef = collection(db, "users", auth.currentUser.uid, "lessons");
+    const qLessons = query(lessonsRef, orderBy("completedAt", "desc"), limit(10));
+    const unsubscribeLessons = onSnapshot(
+      qLessons,
+      (snapshot) => {
+        const list: any[] = [];
+        snapshot.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        setLessons(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, `users/${auth.currentUser?.uid}/lessons`)
+    );
+
     // Admin users subscription
     let unsubscribeUsers: (() => void) | undefined;
     if (isAdmin) {
@@ -176,6 +195,7 @@ export function InterpretationDashboard({
     return () => {
       unsubscribeUser();
       unsubscribeConv();
+      unsubscribeLessons();
       unsubscribeUsers?.();
     };
   }, [isAdmin]);
@@ -318,49 +338,93 @@ export function InterpretationDashboard({
           </div>
         )}
 
-        {/* Recent Conversations Section */}
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-              <History className="w-5 h-5 text-indigo-600" />
-              {t("dash.recentConversations")}
-            </h3>
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search conversations..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-          </div>
-          {filteredConversations.length === 0 ? (
-            <p className="text-sm text-gray-500 italic">{t("dash.noConversations")}</p>
-          ) : (
-            <div className="space-y-4">
-              {filteredConversations.map((conv) => (
-                <div key={conv.id} className="p-4 bg-white rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:border-indigo-300 transition-all" onClick={() => setSelectedConversation(conv)}>
-                  <div className="flex justify-between items-start mb-2">
-                    <h4 className="font-bold text-gray-900">{conv.summary}</h4>
-                    <span className="text-xs text-gray-500 font-mono">
-                      {conv.createdAt?.toDate().toLocaleDateString(uiLanguage === 'ko' ? 'ko-KR' : 'en-US')}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-600 mt-1 mb-2">{conv.keyPoints?.join(", ") || ""}</p>
-                  <div className="flex items-center gap-2">
-                    {conv.speakers?.map((speaker: string, i: number) => (
-                      <span key={i} className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-md">
-                        {speaker}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+        {/* Tabs Section */}
+        <div className="flex gap-4 mb-6 border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`pb-4 px-2 text-sm font-bold transition-all relative ${
+              activeTab === 'history' ? 'text-indigo-600' : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {t("dash.history")}
+            {activeTab === 'history' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-600 rounded-full" />}
+          </button>
+          <button
+            onClick={() => setActiveTab('materials')}
+            className={`pb-4 px-2 text-sm font-bold transition-all relative ${
+              activeTab === 'materials' ? 'text-indigo-600' : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {t("dash.materials")}
+            {activeTab === 'materials' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-600 rounded-full" />}
+          </button>
+          <button
+            onClick={() => setActiveTab('stats')}
+            className={`pb-4 px-2 text-sm font-bold transition-all relative ${
+              activeTab === 'stats' ? 'text-indigo-600' : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {t("dash.stats")}
+            {activeTab === 'stats' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-indigo-600 rounded-full" />}
+          </button>
         </div>
+
+        {activeTab === 'history' && (
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <History className="w-5 h-5 text-indigo-600" />
+                {t("dash.recentConversations")}
+              </h3>
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search conversations..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+            {filteredConversations.length === 0 ? (
+              <p className="text-sm text-gray-500 italic">{t("dash.noConversations")}</p>
+            ) : (
+              <div className="space-y-4">
+                {filteredConversations.map((conv) => (
+                  <div key={conv.id} className="p-4 bg-white rounded-xl border border-gray-200 shadow-sm cursor-pointer hover:border-indigo-300 transition-all" onClick={() => setSelectedConversation(conv)}>
+                    <div className="flex justify-between items-start mb-2">
+                      <h4 className="font-bold text-gray-900">{conv.summary}</h4>
+                      <span className="text-xs text-gray-500 font-mono">
+                        {conv.createdAt?.toDate().toLocaleDateString(uiLanguage === 'ko' ? 'ko-KR' : 'en-US')}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-1 mb-2">{conv.keyPoints?.join(", ") || ""}</p>
+                    <div className="flex items-center gap-2">
+                      {conv.speakers?.map((speaker: string, i: number) => (
+                        <span key={i} className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-md">
+                          {speaker}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'materials' && (
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-8">
+            <MaterialManager />
+          </div>
+        )}
+
+        {activeTab === 'stats' && (
+          <div className="mb-8">
+            <LearningStats lessons={lessons} userProfile={userProfile} />
+          </div>
+        )}
 
         {selectedConversation && (
           <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -429,7 +493,7 @@ export function InterpretationDashboard({
                   onChange={(e) => setUiLanguage(e.target.value as any)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                 >
-                  {Object.entries(languageNames).map(([code, name]) => (
+                  {(Object.entries(languageNames) as [string, string][]).map(([code, name]) => (
                     <option key={code} value={code}>{name}</option>
                   ))}
                 </select>

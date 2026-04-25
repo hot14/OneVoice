@@ -27,7 +27,7 @@ export function LanguageSwitch() {
         onChange={(e) => handleSourceLanguageChange(e.target.value as Language)}
         className="bg-white border border-gray-200 text-gray-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block px-2 py-1 outline-none cursor-pointer hover:bg-gray-50 transition-colors"
       >
-        {Object.entries(languageNames).map(([code, name]) => (
+        {(Object.entries(languageNames) as [string, string][]).map(([code, name]) => (
           <option key={code} value={code}>{name}</option>
         ))}
       </select>
@@ -36,7 +36,7 @@ export function LanguageSwitch() {
         onChange={(e) => setTargetLanguage(e.target.value as Language)}
         className="bg-white border border-gray-200 text-gray-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block px-2 py-1 outline-none cursor-pointer hover:bg-gray-50 transition-colors"
       >
-        {Object.entries(languageNames).map(([code, name]) => (
+        {(Object.entries(languageNames) as [string, string][]).map(([code, name]) => (
           <option key={code} value={code}>{name}</option>
         ))}
       </select>
